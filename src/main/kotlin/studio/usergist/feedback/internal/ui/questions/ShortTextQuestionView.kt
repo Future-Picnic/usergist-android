@@ -1,59 +1,48 @@
 package studio.usergist.feedback.internal.ui.questions
 
 import android.content.Context
-import android.text.Editable
-import android.text.InputFilter
-import android.text.TextWatcher
-import android.view.LayoutInflater
 import android.view.View
-import android.widget.FrameLayout
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
-import studio.usergist.feedback.R
+import android.widget.LinearLayout
 import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.model.Question
 import studio.usergist.feedback.internal.ui.ResolvedTheme
+import studio.usergist.feedback.internal.ui.surface.SurfaceField
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.questionHeader
 
-/** Renders a short free-text question. */
+/** Free-text question (port of RN questions/ShortTextQuestion.tsx). */
 internal class ShortTextQuestionView(
     context: Context,
     private val question: Question.ShortText,
-    private val theme: ResolvedTheme,
+    theme: ResolvedTheme,
 ) : QuestionView {
 
     override var onValueChange: ((PromptAnswerValue) -> Unit)? = null
 
-    override val view: View = LayoutInflater.from(context)
-        .inflate(R.layout.usergist_question_short_text, FrameLayout(context), false)
-
-    private val layout: TextInputLayout = view as TextInputLayout
-    private val input: TextInputEditText = view.findViewById(R.id.usergist_short_text_input)
-
+    private val palette = SurfacePalette.from(theme)
     private var current: String = ""
+    private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    override val view: View = root
+
+    /** The text field, so the host can focus it or keep it above the keyboard. */
+    val field = SurfaceField(
+        context,
+        palette,
+        hint = question.placeholder,
+        accessibilityLabel = "Feedback text answer",
+        multiline = true,
+        minHeightDp = 96,
+        maxLength = question.maxLength?.takeIf { it > 0 },
+    )
 
     init {
-        layout.hint = question.placeholder
-        val max = question.maxLength
-        styleTextAnswer(
-            layout = layout,
-            input = input,
-            theme = theme,
-            minimumHeightDp = 100,
-            minimumLines = 4,
-            maximumLines = 6,
-            maxLength = max,
-        )
-        if (max != null && max > 0) {
-            input.filters = arrayOf(InputFilter.LengthFilter(max))
+        root.addView(context.questionHeader(palette, question.title, question.subtitle, question.imageUrl), matchWidth())
+        field.onTextChanged = { text ->
+            current = text
+            onValueChange?.invoke(currentAnswer())
         }
-        input.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                current = s?.toString().orEmpty()
-                onValueChange?.invoke(currentAnswer())
-            }
-        })
+        root.addView(field, matchWidth())
     }
 
     override fun currentAnswer(): PromptAnswerValue {

@@ -1,41 +1,54 @@
 package studio.usergist.feedback.internal.ui.requests
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
-import android.widget.EditText
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import studio.usergist.feedback.UserGist
 import studio.usergist.feedback.api.FeatureRequest
 import studio.usergist.feedback.api.GetRequestsOptions
 import studio.usergist.feedback.api.RequestSort
+import studio.usergist.feedback.api.RequestStatus
 import studio.usergist.feedback.api.RequestSummary
-import studio.usergist.feedback.internal.requests.RequestComment
+import studio.usergist.feedback.internal.ui.surface.CONTENT_MAX_WIDTH_DP
+import studio.usergist.feedback.internal.ui.surface.MeasureLayout
+import studio.usergist.feedback.internal.ui.surface.SurfaceButton
+import studio.usergist.feedback.internal.ui.surface.SurfaceField
+import studio.usergist.feedback.internal.ui.surface.SurfaceHeader
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.dpF
+import studio.usergist.feedback.internal.ui.surface.dpPx
+import studio.usergist.feedback.internal.ui.surface.keepFocusedFieldVisible
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.roundRect
+import studio.usergist.feedback.internal.ui.surface.surfaceBack
+import studio.usergist.feedback.internal.ui.surface.surfaceClose
+import studio.usergist.feedback.internal.ui.surface.surfaceText
 
-// PORTED FROM: packages/sdk-react-native/src/ui/RequestsBoard.tsx
+// PORTED FROM: packages/sdk-react-native/src/ui/requests/*
 //
-// Lightweight native Activity that drives the Feature Requests board and
-// detail surfaces. Uses raw Android views to avoid pulling in a Compose
-// dependency the SDK's host apps might not have. The host can replace it
-// by listening to `RequestsHandlers` and presenting their own UI.
+// Lightweight native Activity that drives the Feature Requests board,
+// detail and new-suggestion surfaces with raw Android views (no Compose
+// dependency). Colours come from the host theme plus the board accent.
+// The host can replace it by listening to `RequestsHandlers`.
 
 object RequestsBoardLauncher {
     private const val EXTRA_GENERATION = "studio.usergist.feedback.requests.generation"
@@ -92,31 +105,33 @@ object RequestsBoardLauncher {
 }
 
 class RequestsBoardActivity : AppCompatActivity() {
-    private lateinit var contentLayout: LinearLayout
+    private lateinit var root: LinearLayout
+    private lateinit var headerHolder: FrameLayout
+    private lateinit var bodyHolder: FrameLayout
+    private lateinit var bottomHolder: FrameLayout
     private var mode = RequestsBoardLauncher.MODE_BOARD
     private var currentRequestId: String? = null
-    private var accentColor: Int = Color.rgb(91, 75, 255)
+    private var accentColor: String? = null
     private var boardLabel: String = "Suggestions"
     private var boardItems: List<RequestSummary> = emptyList()
     private var boardVoteInFlight: String? = null
+    private var statusFilter: RequestStatus? = null
+    private var imeVisible = false
+    private var palette: SurfacePalette = requestsPalette(null)
+
+    private val screenHost = object : RequestsScreenHost {
+        override val activity: Activity get() = this@RequestsBoardActivity
+        override val palette: SurfacePalette get() = this@RequestsBoardActivity.palette
+        override fun isShowingDetail(requestId: String): Boolean =
+            mode == RequestsBoardLauncher.MODE_DETAIL && currentRequestId == requestId
+        override fun toast(message: String) = this@RequestsBoardActivity.toast(message)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (!RequestsBoardLauncher.attach(this)) { finish(); return }
-        val root = ScrollView(this).apply {
-            setBackgroundColor(Color.rgb(250, 250, 250))
-            isFillViewport = true
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            )
-        }
-        contentLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(24), dp(20), dp(32))
-        }
-        root.addView(contentLayout)
-        setContentView(root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        buildShell()
         onBackPressedDispatcher.addCallback(this) {
             if (mode == RequestsBoardLauncher.MODE_BOARD) finish() else loadBoard()
         }
@@ -124,8 +139,14 @@ class RequestsBoardActivity : AppCompatActivity() {
         UserGist.getRequestBranding { _, branding ->
             runOnUiThread {
                 boardLabel = branding?.entryLabel?.takeIf { it.isNotBlank() } ?: boardLabel
-                accentColor = parseColor(branding?.accentColor) ?: accentColor
-                if (mode == RequestsBoardLauncher.MODE_BOARD) supportActionBar?.title = boardLabel
+                val accent = branding?.accentColor?.takeIf { it.isNotBlank() }
+                if (accent != accentColor) {
+                    accentColor = accent
+                    palette = requestsPalette(accent)
+                    applyChrome()
+                }
+                // Re-render screens that hold no typed input.
+                if (mode == RequestsBoardLauncher.MODE_BOARD && boardItems.isNotEmpty()) renderBoard(boardItems)
             }
         }
 
@@ -143,16 +164,101 @@ class RequestsBoardActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    // ---------------- Shell ----------------
+
+    private fun buildShell() {
+        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        headerHolder = FrameLayout(this)
+        bodyHolder = FrameLayout(this)
+        bottomHolder = FrameLayout(this)
+        root.addView(headerHolder, matchWidth())
+        root.addView(bodyHolder, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        root.addView(bottomHolder, matchWidth())
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
+            imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            // The pinned vote/follow bar gives its height to the comment composer while typing.
+            bottomHolder.visibility = if (imeVisible || bottomHolder.childCount == 0) View.GONE else View.VISIBLE
+            insets
+        }
+        setContentView(root)
+        applyChrome()
+    }
+
+    private fun applyChrome() {
+        root.setBackgroundColor(palette.background)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = palette.lightBackground
+            isAppearanceLightNavigationBars = palette.lightBackground
+        }
+    }
+
+    private fun setScreen(header: View, body: View, bottom: View? = null) {
+        headerHolder.removeAllViews()
+        headerHolder.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(FrameLayout(context).apply {
+                setPadding(dpPx(12), dpPx(4), dpPx(12), dpPx(4))
+                addView(header, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }, matchWidth())
+            addView(View(context).apply { setBackgroundColor(palette.border) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
+        }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        setBody(body)
+        bottomHolder.removeAllViews()
+        bottom?.let { bottomHolder.addView(it, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)) }
+        bottomHolder.visibility = if (bottom == null || imeVisible) View.GONE else View.VISIBLE
+    }
+
+    private fun setBody(body: View) {
+        bodyHolder.removeAllViews()
+        bodyHolder.addView(body, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    }
+
+    private fun header(leading: View, center: View?, trailing: View? = null): View = SurfaceHeader(this).apply {
+        setLeading(leading)
+        setCenter(center)
+        setTrailing(trailing)
+    }.view
+
+    private fun loadingView(): View = FrameLayout(this).apply {
+        addView(ProgressBar(context).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(palette.primary)
+        }, FrameLayout.LayoutParams(dpPx(40), dpPx(40), Gravity.CENTER))
+    }
+
+    private fun scrollingColumn(content: View, maxWidthDp: Int = CONTENT_MAX_WIDTH_DP, padTop: Int = 20, padH: Int = 24): ScrollView {
+        val measure = MeasureLayout(this, dpPx(maxWidthDp)).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(content, matchWidth())
+        }
+        return ScrollView(this).apply {
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isFillViewport = true
+            addView(FrameLayout(context).apply {
+                setPadding(dpPx(padH), dpPx(padTop), dpPx(padH), dpPx(32))
+                addView(measure, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL))
+            }, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
+    // ---------------- Board ----------------
+
     private fun loadBoard() {
         mode = RequestsBoardLauncher.MODE_BOARD
         currentRequestId = null
-        supportActionBar?.setDisplayHomeAsUpEnabled(false)
-        supportActionBar?.title = boardLabel
-        showLoading()
+        hideKeyboard()
+        setScreen(boardHeader(boardItems.size), loadingView())
         UserGist.getRequests(GetRequestsOptions(sort = RequestSort.TOP, limit = 50)) { err, page ->
             runOnUiThread {
+                if (mode != RequestsBoardLauncher.MODE_BOARD) return@runOnUiThread
                 if (err != null || page == null) {
-                    showError("Unable to load requests")
+                    showError(
+                        "Suggestions couldn't load",
+                        "Check your connection, then try again.",
+                    ) { loadBoard() }
                     return@runOnUiThread
                 }
                 renderBoard(page.items)
@@ -160,504 +266,230 @@ class RequestsBoardActivity : AppCompatActivity() {
         }
     }
 
+    private fun boardHeader(count: Int): View = header(
+        surfaceClose(palette, "Close suggestions") { finish() },
+        requestsTitle(palette, boardLabel, "$count ${if (count == 1) "idea" else "ideas"}"),
+        SurfaceButton(this, palette, "New idea", compact = true).apply {
+            setOnAction { loadSubmit() }
+        },
+    )
+
     private fun renderBoard(items: List<RequestSummary>) {
         boardItems = items
-        contentLayout.removeAllViews()
-        contentLayout.addView(LinearLayout(this).apply {
+        val counts = items.groupingBy { it.status }.eachCount()
+        if (statusFilter != null && (counts[statusFilter] ?: 0) == 0) statusFilter = null
+        val filtered = statusFilter?.let { s -> items.filter { it.status == s } } ?: items
+
+        val chips = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(heading(boardLabel), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(primaryButton("+ New", "Create new request") { loadSubmit() })
-        })
-        contentLayout.addView(spacer(12))
-        contentLayout.addView(caption("${items.size} ${if (items.size == 1) "idea" else "ideas"}"))
-        contentLayout.addView(spacer(12))
-        for (row in items) {
-            contentLayout.addView(boardRow(row))
-            contentLayout.addView(spacer(10))
-        }
-    }
-
-    private fun boardRow(row: RequestSummary): LinearLayout {
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.TOP
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            background = roundedBackground(Color.WHITE, 16)
-
-            addView(Button(this@RequestsBoardActivity).apply {
-                text = "▲\n${row.upvoteCount}"
-                textSize = 13f
-                isAllCaps = false
-                minWidth = dp(52)
-                minHeight = dp(52)
-                contentDescription = if (boardVoteInFlight == row.id) {
-                    "Updating vote for ${row.title}"
-                } else if (row.viewerHasUpvoted) {
-                    "Remove vote from ${row.title}"
-                } else {
-                    "Upvote ${row.title}"
-                }
-                isEnabled = boardVoteInFlight == null
-                backgroundTintList = ColorStateList.valueOf(
-                    if (row.viewerHasUpvoted) accentColor else withAlpha(accentColor, 24),
-                )
-                setTextColor(if (row.viewerHasUpvoted) Color.WHITE else accentColor)
-                setOnClickListener {
-                    val before = boardItems
-                    val vote = !row.viewerHasUpvoted
-                    val optimistic = row.copy(
-                        upvoteCount = (row.upvoteCount + if (vote) 1 else -1).coerceAtLeast(0),
-                        followerCount = (
-                            row.followerCount + if (vote && !row.viewerIsFollowing) 1 else 0
-                        ).coerceAtLeast(0),
-                        viewerHasUpvoted = vote,
-                        viewerIsFollowing = if (vote) true else row.viewerIsFollowing,
-                    )
-                    boardVoteInFlight = row.id
-                    renderBoard(boardItems.map { if (it.id == row.id) optimistic else it })
-                    UserGist.voteOnRequest(row.id, vote) { error, result ->
-                        runOnUiThread {
-                            boardVoteInFlight = null
-                            if (error != null || result == null) {
-                                renderBoard(before)
-                                toast("Vote failed")
-                            } else {
-                                renderBoard(boardItems.map {
-                                    if (it.id == row.id) {
-                                        it.copy(
-                                            upvoteCount = result.upvoteCount,
-                                            followerCount = result.followerCount,
-                                            viewerHasUpvoted = result.upvoted,
-                                            viewerIsFollowing = result.followed,
-                                        )
-                                    } else {
-                                        it
-                                    }
-                                })
-                            }
-                        }
-                    }
-                }
+            setPadding(dpPx(16), dpPx(4), dpPx(16), dpPx(4))
+            addView(filterChip(palette, "All", items.size, statusFilter == null, null) {
+                statusFilter = null
+                renderBoard(boardItems)
             })
-            addView(spacer(12, horizontal = true))
-            addView(LinearLayout(this@RequestsBoardActivity).apply {
+            STATUS_ORDER.forEach { status ->
+                val count = counts[status] ?: 0
+                if (count == 0) return@forEach
+                addView(filterChip(palette, statusLabel(status), count, statusFilter == status, statusColor(status)) {
+                    statusFilter = status
+                    renderBoard(boardItems)
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    marginStart = dpPx(8)
+                })
+            }
+        }
+        val chipScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            addView(chips)
+        }
+
+        val list: View = if (filtered.isEmpty()) {
+            if (items.isEmpty()) {
+                requestsEmpty(palette, "No suggestions yet", "Share the first idea for making this app better.",
+                    SurfaceButton(this, palette, "Share an idea").apply { setOnAction { loadSubmit() } })
+            } else {
+                requestsEmpty(palette, "Nothing with this status", "Choose All to see every suggestion.")
+            }
+        } else {
+            LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                isClickable = true
-                isFocusable = true
-                contentDescription = "Open request ${row.title}"
-                setOnClickListener { loadDetail(row.id) }
-                addView(TextView(this@RequestsBoardActivity).apply {
-                    text = row.title
-                    textSize = 16f
-                    setTextColor(Color.rgb(17, 17, 17))
-                    setTypeface(typeface, Typeface.BOLD)
-                })
-                addView(spacer(4))
-                addView(TextView(this@RequestsBoardActivity).apply {
-                    text = row.description
-                    textSize = 13f
-                    maxLines = 2
-                    setTextColor(Color.rgb(107, 114, 128))
-                })
-                addView(spacer(8))
-                addView(caption("${statusLabel(row.status.raw)}  •  ${row.followerCount} followers"))
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                filtered.forEachIndexed { index, row ->
+                    addView(requestCard(palette, row, boardVoteInFlight == null, onOpen = { loadDetail(row.id) }, onUpvote = { voteFromBoard(row) }),
+                        matchWidth().apply { if (index > 0) topMargin = dpPx(10) })
+                }
+            }
+        }
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(chipScroll, matchWidth())
+            addView(scrollingColumn(list, CONTENT_MAX_WIDTH_DP + 32, padTop = 4, padH = 16),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        setScreen(boardHeader(items.size), body)
+    }
+
+    private fun voteFromBoard(row: RequestSummary) {
+        if (boardVoteInFlight != null) return
+        val before = boardItems
+        val vote = !row.viewerHasUpvoted
+        val optimistic = row.copy(
+            upvoteCount = (row.upvoteCount + if (vote) 1 else -1).coerceAtLeast(0),
+            followerCount = (row.followerCount + if (vote && !row.viewerIsFollowing) 1 else 0).coerceAtLeast(0),
+            viewerHasUpvoted = vote,
+            viewerIsFollowing = if (vote) true else row.viewerIsFollowing,
+        )
+        boardVoteInFlight = row.id
+        renderBoard(boardItems.map { if (it.id == row.id) optimistic else it })
+        UserGist.voteOnRequest(row.id, vote) { error, result ->
+            runOnUiThread {
+                boardVoteInFlight = null
+                if (mode != RequestsBoardLauncher.MODE_BOARD) return@runOnUiThread
+                if (error != null || result == null) {
+                    renderBoard(before)
+                    toast("Vote failed")
+                } else {
+                    renderBoard(boardItems.map {
+                        if (it.id == row.id) {
+                            it.copy(
+                                upvoteCount = result.upvoteCount,
+                                followerCount = result.followerCount,
+                                viewerHasUpvoted = result.upvoted,
+                                viewerIsFollowing = result.followed,
+                            )
+                        } else {
+                            it
+                        }
+                    })
+                }
+            }
         }
     }
+
+    // ---------------- New suggestion ----------------
 
     private fun loadSubmit() {
         mode = "submit"
         currentRequestId = null
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        supportActionBar?.title = "New suggestion"
-        contentLayout.removeAllViews()
-
-        contentLayout.addView(caption("Tell us what you'd like to see. Other users can upvote your idea, and the team will respond as work progresses."))
-        contentLayout.addView(spacer(20))
-        contentLayout.addView(fieldLabel("Title"))
-        val titleInput = input("A short, clear title", "Suggestion title", multiline = false).apply {
-            filters = arrayOf(InputFilter.LengthFilter(120))
-        }
-        contentLayout.addView(titleInput)
-        contentLayout.addView(spacer(16))
-        contentLayout.addView(fieldLabel("Description"))
-        val descriptionInput = input(
-            "What does this do? Who is it for? Why does it matter?",
-            "Suggestion description",
-            multiline = true,
-        ).apply {
-            filters = arrayOf(InputFilter.LengthFilter(1500))
-            minLines = 6
-        }
-        contentLayout.addView(descriptionInput)
-        contentLayout.addView(spacer(20))
-        lateinit var postButton: Button
         var posting = false
-        postButton = primaryButton("Post", "Post") {
-            if (posting) return@primaryButton
-            val cleanTitle = titleInput.text.toString().trim()
-            val cleanDescription = descriptionInput.text.toString().trim()
-            if (cleanTitle.isEmpty() || cleanDescription.isEmpty()) {
-                toast("Title and description are required")
-                return@primaryButton
-            }
+        val title = SurfaceField(this, palette, "A short, clear title", "Suggestion title", multiline = false, maxLength = TITLE_MAX,
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES)
+        val description = SurfaceField(this, palette, "What should it do, who is it for, and why does it matter?",
+            "Suggestion description", multiline = true, minHeightDp = 140, maxLength = DESCRIPTION_MAX)
+        val post = SurfaceButton(this, palette, "Post", compact = true)
+        val errorSlot = FrameLayout(this).apply { visibility = View.GONE }
+
+        fun refresh() {
+            val t = title.value.trim()
+            val d = description.value.trim()
+            post.setDisabled(t.isEmpty() || t.length > TITLE_MAX || d.isEmpty() || d.length > DESCRIPTION_MAX)
+            post.loading = posting
+        }
+        title.onTextChanged = { refresh() }
+        description.onTextChanged = { refresh() }
+        refresh()
+
+        post.setOnAction {
+            if (posting) return@setOnAction
+            val cleanTitle = title.value.trim()
+            val cleanDescription = description.value.trim()
+            if (cleanTitle.isEmpty() || cleanDescription.isEmpty()) return@setOnAction
             posting = true
-            postButton.isEnabled = false
-            postButton.text = "Posting…"
-            postButton.contentDescription = "Posting request"
-            titleInput.isEnabled = false
-            descriptionInput.isEnabled = false
-            showLoading()
+            errorSlot.visibility = View.GONE
+            title.isEnabled = false
+            description.isEnabled = false
+            refresh()
             UserGist.submitRequest(cleanTitle, cleanDescription) { error, request ->
                 runOnUiThread {
+                    posting = false
+                    if (mode != "submit") return@runOnUiThread
                     if (error != null || request == null) {
-                        loadSubmit()
-                        toast("Could not submit request")
+                        title.isEnabled = true
+                        description.isEnabled = true
+                        refresh()
+                        errorSlot.removeAllViews()
+                        errorSlot.addView(surfaceText(palette, "Your suggestion wasn't posted. Check your connection, then post again.",
+                            15f, palette.text, 400, 21f).apply {
+                            setPadding(dpPx(14), dpPx(14), dpPx(14), dpPx(14))
+                            background = roundRect(palette.fill, dpF(palette.radius(14)))
+                            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                        })
+                        errorSlot.visibility = View.VISIBLE
                     } else {
                         loadDetail(request.id)
                     }
                 }
             }
         }
-        contentLayout.addView(postButton)
+
+        fun label(text: String) = surfaceText(palette, text, 15f, palette.text, 600)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(surfaceText(palette, "Share an idea. Others can upvote it, and the team posts updates as work moves forward.",
+                15f, palette.subtext, 400, 22f), matchWidth())
+            addView(errorSlot, matchWidth().apply { topMargin = dpPx(20) })
+            addView(label("Title"), matchWidth().apply { topMargin = dpPx(20) })
+            addView(title, matchWidth().apply { topMargin = dpPx(8) })
+            addView(label("Description"), matchWidth().apply { topMargin = dpPx(20) })
+            addView(description, matchWidth().apply { topMargin = dpPx(8) })
+        }
+        setScreen(
+            header(surfaceClose(palette, "Cancel new suggestion") { loadBoard() }, requestsTitle(palette, "New suggestion"), post),
+            // Reveal the whole focused field plus its label above the keyboard,
+            // not just the cursor line (description's first line stayed hidden).
+            scrollingColumn(form).apply { keepFocusedFieldVisible(dpPx(32)) },
+        )
+        title.editText.post {
+            title.editText.requestFocus()
+            WindowCompat.getInsetsController(window, title.editText).show(WindowInsetsCompat.Type.ime())
+        }
     }
+
+    // ---------------- Detail ----------------
 
     private fun loadDetail(requestId: String) {
         mode = RequestsBoardLauncher.MODE_DETAIL
         currentRequestId = requestId
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        supportActionBar?.title = "Suggestion"
-        showLoading()
+        hideKeyboard()
+        val detailHeader = header(surfaceBack(palette, "Back to suggestions") { loadBoard() }, requestsTitle(palette, "Suggestion"))
+        setScreen(detailHeader, loadingView())
         UserGist.getRequest(requestId) { err, req ->
             runOnUiThread {
-                contentLayout.removeAllViews()
+                if (!screenHost.isShowingDetail(requestId)) return@runOnUiThread
                 if (err != null || req == null) {
-                    showError("Unable to load request")
+                    showError("This suggestion couldn't load", "Check your connection, then try again.") { loadDetail(requestId) }
                     return@runOnUiThread
                 }
-                renderDetail(req)
+                renderDetail(detailHeader, req)
             }
         }
     }
 
-    private fun renderDetail(req: FeatureRequest, mutationInFlight: Boolean = false) {
-        contentLayout.addView(caption(statusLabel(req.status.raw).uppercase()))
-        contentLayout.addView(spacer(10))
-        contentLayout.addView(heading(req.title))
-        contentLayout.addView(spacer(16))
-        contentLayout.addView(TextView(this).apply {
-            text = "${req.upvoteCount} upvotes  •  ${req.followerCount} followers"
-            textSize = 16f
-            gravity = Gravity.CENTER
-            setPadding(dp(18), dp(14), dp(18), dp(14))
-            background = roundedBackground(Color.WHITE, 14)
-        })
-        contentLayout.addView(spacer(20))
-        contentLayout.addView(TextView(this).apply {
-            text = req.description
-            textSize = 15f
-            setTextColor(Color.rgb(31, 41, 55))
-        })
-        if (!req.devResponse.isNullOrBlank()) {
-            contentLayout.addView(TextView(this).apply {
-                text = req.devResponse
-                setPadding(dp(16), dp(16), dp(16), dp(16))
-                background = roundedBackground(Color.WHITE, 12)
-            })
-        }
-        contentLayout.addView(spacer(20))
-        contentLayout.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val voteButton = primaryButton(
-                if (req.viewerHasUpvoted) "▲ Upvoted (${req.upvoteCount})" else "▲ Upvote (${req.upvoteCount})",
-                if (mutationInFlight) {
-                    "Updating request vote"
-                } else if (req.viewerHasUpvoted) {
-                    "Remove request vote"
-                } else {
-                    "Upvote request"
-                },
-            ) {
-                if (mutationInFlight) return@primaryButton
-                val vote = !req.viewerHasUpvoted
-                val optimistic = req.copy(
-                    upvoteCount = (req.upvoteCount + if (vote) 1 else -1).coerceAtLeast(0),
-                    followerCount = (
-                        req.followerCount + if (vote && !req.viewerIsFollowing) 1 else 0
-                    ).coerceAtLeast(0),
-                    viewerHasUpvoted = vote,
-                    viewerIsFollowing = if (vote) true else req.viewerIsFollowing,
-                )
-                replaceDetail(optimistic, mutationInFlight = true)
-                UserGist.voteOnRequest(req.id, vote) { error, result ->
-                    runOnUiThread {
-                        if (error != null || result == null) {
-                            replaceDetail(req)
-                            toast("Vote failed")
-                        } else {
-                            replaceDetail(optimistic.copy(
-                                upvoteCount = result.upvoteCount,
-                                followerCount = result.followerCount,
-                                viewerHasUpvoted = result.upvoted,
-                                viewerIsFollowing = result.followed,
-                            ))
-                        }
-                    }
-                }
-            }.apply { isEnabled = !mutationInFlight }
-            addView(voteButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            addView(spacer(8, horizontal = true))
-            val followButton = secondaryButton(
-                if (req.viewerIsFollowing) "✓ Following" else "Follow",
-                if (mutationInFlight) {
-                    "Updating request follow"
-                } else if (req.viewerIsFollowing) {
-                    "Unfollow request"
-                } else {
-                    "Follow request"
-                },
-            ) {
-                if (mutationInFlight) return@secondaryButton
-                val follow = !req.viewerIsFollowing
-                val optimistic = req.copy(
-                    followerCount = (
-                        req.followerCount + if (follow) 1 else -1
-                    ).coerceAtLeast(0),
-                    viewerIsFollowing = follow,
-                )
-                replaceDetail(optimistic, mutationInFlight = true)
-                UserGist.followRequest(req.id, follow) { error, result ->
-                    runOnUiThread {
-                        if (error != null || result == null) {
-                            replaceDetail(req)
-                            toast("Follow failed")
-                        } else {
-                            replaceDetail(optimistic.copy(
-                                followerCount = result.followerCount,
-                                viewerIsFollowing = result.following,
-                            ))
-                        }
-                    }
-                }
-            }.apply { isEnabled = !mutationInFlight }
-            addView(followButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        })
-        contentLayout.addView(spacer(28))
-        val commentsLabel = fieldLabel("COMMENTS")
-        contentLayout.addView(commentsLabel)
-        val commentsContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        contentLayout.addView(commentsContainer)
-        contentLayout.addView(spacer(12))
-        val commentInput = input("Add a comment…", "Request comment", multiline = true).apply {
-            filters = arrayOf(InputFilter.LengthFilter(1000))
-            minLines = 3
-        }
-        contentLayout.addView(commentInput)
-        contentLayout.addView(spacer(8))
-        val renderedComments = mutableListOf<RequestComment>()
-        fun renderComments(error: Boolean = false) {
-            commentsContainer.removeAllViews()
-            commentsLabel.text = if (renderedComments.isEmpty()) {
-                "COMMENTS"
-            } else {
-                "COMMENTS · ${renderedComments.size}"
-            }
-            when {
-                error -> commentsContainer.addView(caption("Unable to load comments"))
-                renderedComments.isEmpty() -> commentsContainer.addView(
-                    caption("No comments yet — be the first to weigh in."),
-                )
-                else -> renderedComments.forEach { comment ->
-                    commentsContainer.addView(commentView(comment))
-                }
-            }
-        }
-        lateinit var commentPostButton: Button
-        var postingComment = false
-        commentPostButton = primaryButton("Post", "Post request comment") {
-            if (postingComment) return@primaryButton
-            val body = commentInput.text.toString().trim()
-            if (body.isEmpty()) return@primaryButton
-            postingComment = true
-            commentInput.setText("")
-            commentPostButton.isEnabled = false
-            commentPostButton.text = "Posting…"
-            commentPostButton.contentDescription = "Posting request comment"
-            UserGist.postComment(req.id, body) { error, created ->
-                runOnUiThread {
-                    postingComment = false
-                    commentPostButton.isEnabled = true
-                    commentPostButton.text = "Post"
-                    commentPostButton.contentDescription = "Post request comment"
-                    if (error != null || created == null) {
-                        if (commentInput.text.isNullOrEmpty()) commentInput.setText(body)
-                        toast("Could not post comment")
-                    } else {
-                        if (renderedComments.none { it.id == created.id }) {
-                            renderedComments += created
-                        }
-                        renderComments()
-                    }
-                }
-            }
-        }
-        contentLayout.addView(commentPostButton)
-        UserGist.getComments(req.id) { error, comments ->
-            runOnUiThread {
-                if (error != null) {
-                    renderComments(error = renderedComments.isEmpty())
-                } else {
-                    val fetched = comments.orEmpty()
-                    val fetchedIds = fetched.mapTo(mutableSetOf()) { it.id }
-                    val localOnly = renderedComments.filterNot { it.id in fetchedIds }
-                    renderedComments.clear()
-                    renderedComments += fetched
-                    renderedComments += localOnly
-                    renderComments()
-                }
-            }
-        }
+    private fun renderDetail(detailHeader: View, req: FeatureRequest) {
+        val screen = RequestDetailScreen(screenHost, req)
+        (detailHeader.parent as? ViewGroup)?.removeView(detailHeader)
+        setScreen(detailHeader, screen.body, screen.bottomBar)
     }
 
-    private fun commentView(comment: RequestComment): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = roundedBackground(Color.WHITE, 10)
-        addView(caption(if (comment.viewerIsAuthor) "You" else "Anonymous"))
-        addView(TextView(this@RequestsBoardActivity).apply {
-            text = comment.body
-            contentDescription = "Request comment body: ${comment.body}"
-            textSize = 14f
-            setTextColor(Color.rgb(31, 41, 55))
-        })
-        val params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        params.bottomMargin = dp(8)
-        layoutParams = params
+    private fun showError(title: String, body: String, retry: () -> Unit) {
+        setBody(requestsEmpty(palette, title, body, SurfaceButton(this, palette, "Try again").apply { setOnAction(retry) }))
+        bottomHolder.removeAllViews()
+        bottomHolder.visibility = View.GONE
     }
 
-    private fun replaceDetail(req: FeatureRequest, mutationInFlight: Boolean = false) {
-        if (mode != RequestsBoardLauncher.MODE_DETAIL || currentRequestId != req.id) return
-        contentLayout.removeAllViews()
-        renderDetail(req, mutationInFlight)
+    private fun hideKeyboard() {
+        currentFocus?.clearFocus()
+        WindowCompat.getInsetsController(window, window.decorView).hide(WindowInsetsCompat.Type.ime())
     }
-
-    private fun showLoading() {
-        contentLayout.removeAllViews()
-        contentLayout.addView(ProgressBar(this).apply {
-            isIndeterminate = true
-            indeterminateTintList = ColorStateList.valueOf(accentColor)
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(72)))
-    }
-
-    private fun showError(message: String) {
-        contentLayout.removeAllViews()
-        contentLayout.addView(heading(message))
-        contentLayout.addView(spacer(16))
-        contentLayout.addView(primaryButton("Try again", "Try again") {
-            currentRequestId?.let(::loadDetail) ?: loadBoard()
-        })
-    }
-
-    private fun heading(value: String) = TextView(this).apply {
-        text = value
-        textSize = 22f
-        setTextColor(Color.rgb(17, 17, 17))
-        setTypeface(typeface, Typeface.BOLD)
-    }
-
-    private fun fieldLabel(value: String) = TextView(this).apply {
-        text = value
-        textSize = 13f
-        setTextColor(Color.rgb(55, 65, 81))
-        setTypeface(typeface, Typeface.BOLD)
-    }
-
-    private fun caption(value: String) = TextView(this).apply {
-        text = value
-        textSize = 12f
-        setTextColor(Color.rgb(107, 114, 128))
-    }
-
-    private fun input(hintValue: String, accessibilityLabel: String, multiline: Boolean) = EditText(this).apply {
-        hint = hintValue
-        contentDescription = accessibilityLabel
-        textSize = 15f
-        setTextColor(Color.rgb(17, 17, 17))
-        setHintTextColor(Color.rgb(156, 163, 175))
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        background = roundedStrokeBackground(Color.WHITE, Color.rgb(229, 231, 235), 12)
-        inputType = if (multiline) {
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        } else {
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        }
-        gravity = if (multiline) Gravity.TOP or Gravity.START else Gravity.CENTER_VERTICAL
-    }
-
-    private fun primaryButton(label: String, accessibilityLabel: String, action: () -> Unit) =
-        Button(this).apply {
-            text = label
-            isAllCaps = false
-            contentDescription = accessibilityLabel
-            setTextColor(Color.WHITE)
-            backgroundTintList = ColorStateList.valueOf(accentColor)
-            setOnClickListener { action() }
-        }
-
-    private fun secondaryButton(label: String, accessibilityLabel: String, action: () -> Unit) =
-        Button(this).apply {
-            text = label
-            isAllCaps = false
-            contentDescription = accessibilityLabel
-            setTextColor(Color.rgb(17, 17, 17))
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(243, 244, 246))
-            setOnClickListener { action() }
-        }
-
-    private fun spacer(size: Int, horizontal: Boolean = false) = View(this).apply {
-        layoutParams = if (horizontal) {
-            LinearLayout.LayoutParams(dp(size), 1)
-        } else {
-            LinearLayout.LayoutParams(1, dp(size))
-        }
-    }
-
-    private fun roundedBackground(color: Int, radiusDp: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(color)
-        cornerRadius = dp(radiusDp).toFloat()
-    }
-
-    private fun roundedStrokeBackground(color: Int, strokeColor: Int, radiusDp: Int) =
-        roundedBackground(color, radiusDp).apply { setStroke(dp(1), strokeColor) }
-
-    private fun parseColor(value: String?): Int? = try {
-        value?.let(Color::parseColor)
-    } catch (_: IllegalArgumentException) {
-        null
-    }
-
-    private fun withAlpha(color: Int, alpha: Int): Int = Color.argb(
-        alpha,
-        Color.red(color),
-        Color.green(color),
-        Color.blue(color),
-    )
-
-    private fun statusLabel(raw: String): String = raw
-        .split('_')
-        .joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
-    override fun onSupportNavigateUp(): Boolean {
-        loadBoard()
-        return true
+    private companion object {
+        const val TITLE_MAX = 120
+        const val DESCRIPTION_MAX = 1500
     }
-
 }

@@ -8,7 +8,8 @@
         <activity
             android:name=".internal.ui.requests.RequestsBoardActivity"
             android:exported="false"
-            android:theme="@style/Theme.AppCompat.Light.DarkActionBar" />
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/UserGist.Requests" />
         <activity
             android:name=".internal.surveys.SurveyActivity"
             android:exported="false"

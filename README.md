@@ -12,7 +12,7 @@ feature requests, analytics events, and host-compatible FCM delivery.
 
 ```kotlin
 dependencies {
-    implementation("com.usergist:feedback:0.2.0")
+    implementation("com.usergist:feedback:0.2.1")
 }
 ```
 
@@ -74,7 +74,9 @@ class MyApp : Application() {
 
 ### Consent gate (GDPR)
 
-No network traffic leaves the device until consent is granted.
+Each purpose gates its data collection. Denied analytics are dropped; request
+mutations require feedback consent. Control-plane calls may still synchronize
+anonymous session and consent state.
 
 ```kotlin
 UserGist.setConsent(Consent(analytics = true, feedback = true))

@@ -1,26 +1,40 @@
 package studio.usergist.feedback.internal.ui.questions
 
 import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.view.LayoutInflater
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.RadioButton
 import android.widget.TextView
-import com.google.android.material.button.MaterialButton
-import studio.usergist.feedback.R
 import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.model.Question
 import studio.usergist.feedback.internal.ui.ResolvedTheme
+import studio.usergist.feedback.internal.ui.surface.PressFrame
+import studio.usergist.feedback.internal.ui.surface.SurfaceColor
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.dpF
+import studio.usergist.feedback.internal.ui.surface.dpPx
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.oval
+import studio.usergist.feedback.internal.ui.surface.questionHeader
+import studio.usergist.feedback.internal.ui.surface.roundRect
+import studio.usergist.feedback.internal.ui.surface.surfaceText
 
-/** Renders the dashboard-selected rating style. Stars are the wire default. */
+/**
+ * Rating question (port of RN questions/RatingQuestion.tsx). Honours the
+ * dashboard display: stars (default), numeric chips, or emoji (5-point only).
+ * The row is centred.
+ */
 internal class RatingQuestionView(
     context: Context,
     private val question: Question.Rating,
-    private val theme: ResolvedTheme,
+    theme: ResolvedTheme,
     initialValue: Int? = null,
+    includeHeader: Boolean = true,
 ) : QuestionView {
 
     override var onValueChange: ((PromptAnswerValue) -> Unit)? = null
@@ -29,127 +43,62 @@ internal class RatingQuestionView(
         val EMOJI = listOf("😡", "😕", "😐", "🙂", "😍")
     }
 
-    override val view: View = LayoutInflater.from(context)
-        .inflate(R.layout.usergist_question_rating, FrameLayout(context), false)
-
-    private val group: LinearLayout = view.findViewById(R.id.usergist_rating_group)
-    private val lowLabel: TextView = view.findViewById(R.id.usergist_rating_low)
-    private val highLabel: TextView = view.findViewById(R.id.usergist_rating_high)
-    private val buttons = mutableListOf<MaterialButton>()
-
-    private var selectedValue: Int? = initialValue
+    private val palette = SurfacePalette.from(theme)
+    private val scale = if (question.scale == 10) 10 else 5
+    // Not named `display`: inside the Item view that would resolve to View.getDisplay().
+    private val ratingDisplay = if (question.display == Question.Rating.Display.EMOJI && scale != 5) {
+        Question.Rating.Display.STARS
+    } else {
+        question.display
+    }
+    private var selectedValue: Int? = initialValue?.takeIf { it in 1..scale }
+    private val items = mutableListOf<Item>()
+    private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    override val view: View = root
 
     init {
-        val scale = if (question.scale == 10) 10 else 5
-        selectedValue = selectedValue?.takeIf { it in 1..scale }
-        val display = if (question.display == Question.Rating.Display.EMOJI && scale != 5) {
-            Question.Rating.Display.STARS
-        } else {
-            question.display
+        if (includeHeader) {
+            root.addView(context.questionHeader(palette, question.title, question.subtitle, question.imageUrl, centered = true), matchWidth())
+        }
+        // Wrap like the RN flex row: one line when it fits, otherwise rows of five.
+        val itemWidth = if (ratingDisplay ==Question.Rating.Display.EMOJI) 52 else 48
+        val fitsOneRow = context.resources.configuration.screenWidthDp - 48 >= scale * (itemWidth + 8)
+        val perRow = if (fitsOneRow) scale else 5
+        val rows = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
         }
         var row: LinearLayout? = null
         for (i in 1..scale) {
-            val indexInRow = (i - 1) % 5
-            val targetRow = if (indexInRow == 0) {
-                LinearLayout(context).apply {
+            val index = (i - 1) % perRow
+            if (index == 0) {
+                row = LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = android.view.Gravity.CENTER
-                }.also { newRow ->
-                    row = newRow
-                    group.addView(
-                        newRow,
-                        LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ).apply {
-                            if (i > 1) topMargin = dp(context, 8)
-                        },
-                    )
+                    gravity = Gravity.CENTER
                 }
-            } else {
-                requireNotNull(row)
+                rows.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    if (i > 1) topMargin = context.dpPx(8)
+                })
             }
-            val button = MaterialButton(context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
-                id = View.generateViewId()
-                tag = i
-                contentDescription = "Rate $i"
-                isCheckable = true
-                when (display) {
-                    Question.Rating.Display.STARS -> {
-                        text = "★"
-                        // MaterialButton's glyph renders optically smaller than the
-                        // 28sp React Native Text reference inside the same 36dp target.
-                        textSize = 36f
-                        includeFontPadding = false
-                        minWidth = dp(context, 36)
-                        minimumWidth = dp(context, 36)
-                        minHeight = dp(context, 36)
-                        minimumHeight = dp(context, 36)
-                        setPadding(0, 0, 0, 0)
-                        insetTop = 0
-                        insetBottom = 0
-                        strokeWidth = 0
-                        backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-                    }
-                    Question.Rating.Display.EMOJI -> {
-                        text = EMOJI[i - 1]
-                        textSize = 30f
-                        includeFontPadding = false
-                        minWidth = dp(context, 44)
-                        minimumWidth = dp(context, 44)
-                        minHeight = dp(context, 44)
-                        minimumHeight = dp(context, 44)
-                        setPadding(0, 0, 0, 0)
-                        insetTop = 0
-                        insetBottom = 0
-                        strokeWidth = 0
-                        backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-                    }
-                    Question.Rating.Display.NUMERIC -> {
-                        text = i.toString()
-                        minWidth = dp(context, 40)
-                        minimumWidth = dp(context, 40)
-                        minHeight = dp(context, 40)
-                        minimumHeight = dp(context, 40)
-                        cornerRadius = dp(context, 20)
-                        insetTop = 0
-                        insetBottom = 0
-                        strokeWidth = dp(context, 1)
-                        strokeColor = ColorStateList.valueOf(theme.border ?: Color.LTGRAY)
-                        backgroundTintList = ColorStateList.valueOf(Color.TRANSPARENT)
-                    }
-                }
-            }
-            val itemSize = when (display) {
-                Question.Rating.Display.STARS -> dp(context, 36)
-                Question.Rating.Display.EMOJI -> dp(context, 44)
-                Question.Rating.Display.NUMERIC -> ViewGroup.LayoutParams.WRAP_CONTENT
-            }
-            val itemHeight = when (display) {
-                Question.Rating.Display.STARS -> dp(context, 36)
-                Question.Rating.Display.EMOJI -> dp(context, 44)
-                Question.Rating.Display.NUMERIC -> dp(context, 40)
-            }
-            targetRow.addView(
-                button,
-                LinearLayout.LayoutParams(itemSize, itemHeight).apply {
-                    if (indexInRow > 0) marginStart = dp(context, 8)
-                },
-            )
-            button.setOnClickListener {
-                selectedValue = i
-                renderSelection(display)
-                onValueChange?.invoke(currentAnswer())
-            }
-            buttons += button
+            val item = Item(context, i)
+            items += item
+            requireNotNull(row).addView(item, LinearLayout.LayoutParams(
+                if (ratingDisplay == Question.Rating.Display.NUMERIC) ViewGroup.LayoutParams.WRAP_CONTENT else context.dpPx(itemWidth),
+                context.dpPx(itemWidth),
+            ).apply { if (index > 0) marginStart = context.dpPx(8) })
         }
-        renderSelection(display)
-        lowLabel.text = question.lowLabel.orEmpty()
-        highLabel.text = question.highLabel.orEmpty()
-        theme.subtext?.let {
-            lowLabel.setTextColor(it)
-            highLabel.setTextColor(it)
+        root.addView(rows, matchWidth())
+        if (!question.lowLabel.isNullOrBlank() || !question.highLabel.isNullOrBlank()) {
+            root.addView(LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(context.surfaceText(palette, question.lowLabel.orEmpty(), 13f, palette.subtext),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                addView(context.surfaceText(palette, question.highLabel.orEmpty(), 13f, palette.subtext, gravity = Gravity.END),
+                    LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = context.dpPx(16) })
+            }, matchWidth().apply { topMargin = context.dpPx(10) })
         }
+        render()
     }
 
     override fun currentAnswer(): PromptAnswerValue {
@@ -159,30 +108,85 @@ internal class RatingQuestionView(
 
     override fun isSubmittable(): Boolean = selectedValue != null
 
-    private fun renderSelection(display: Question.Rating.Display) {
-        val primary = theme.primary ?: Color.rgb(98, 0, 238)
-        val border = theme.border ?: Color.LTGRAY
-        val text = theme.text ?: Color.DKGRAY
-        buttons.forEach { button ->
-            val value = button.tag as Int
-            when (display) {
+    private fun render() = items.forEach { it.paint(false) }
+
+    private inner class Item(context: Context, val value: Int) : PressFrame(context, 1f) {
+        private val label: TextView = TextView(context).apply {
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+            when (ratingDisplay) {
                 Question.Rating.Display.STARS -> {
-                    button.setTextColor(if (selectedValue != null && value <= selectedValue!!) primary else border)
+                    text = "★"
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 34f)
                 }
                 Question.Rating.Display.EMOJI -> {
-                    button.alpha = if (selectedValue == null || selectedValue == value) 1f else 0.35f
+                    text = EMOJI[value - 1]
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
                 }
                 Question.Rating.Display.NUMERIC -> {
-                    val selected = selectedValue == value
-                    button.setTextColor(if (selected) theme.background ?: Color.WHITE else text)
-                    button.backgroundTintList = ColorStateList.valueOf(if (selected) primary else Color.TRANSPARENT)
+                    text = value.toString()
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                    typeface = palette.typeface(700)
                 }
             }
-            button.isSelected = selectedValue == value
-            button.isChecked = selectedValue == value
+        }
+
+        init {
+            isClickable = true
+            isFocusable = true
+            contentDescription = "Rate $value"
+            if (ratingDisplay == Question.Rating.Display.NUMERIC) {
+                minimumWidth = context.dpPx(48)
+                setPadding(context.dpPx(12), 0, context.dpPx(12), 0)
+            }
+            addView(label, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
+            accessibilityDelegate = object : AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = RadioButton::class.java.name
+                    info.isCheckable = true
+                    info.isChecked = selectedValue == value
+                }
+            }
+            setOnClickListener {
+                selectedValue = value
+                render()
+                onValueChange?.invoke(currentAnswer())
+            }
+        }
+
+        fun paint(pressed: Boolean) {
+            val selected = selectedValue == value
+            when (ratingDisplay) {
+                Question.Rating.Display.STARS -> {
+                    val filled = selectedValue?.let { value <= it } == true
+                    label.setTextColor(if (filled) palette.primary else SurfaceColor.withAlpha(palette.text, 0.16f))
+                    alpha = if (pressed) 0.7f else 1f
+                }
+                Question.Rating.Display.EMOJI -> {
+                    background = if (selected) oval(palette.tint) else null
+                    alpha = if (selected || selectedValue == null) 1f else 0.4f
+                }
+                Question.Rating.Display.NUMERIC -> {
+                    background = roundRect(
+                        when {
+                            selected -> palette.primary
+                            pressed -> palette.fill
+                            else -> 0
+                        },
+                        context.dpF(palette.radius(12)),
+                        context.dpPx(1.5f),
+                        if (selected) palette.primary else palette.border,
+                    )
+                    label.setTextColor(if (selected) palette.onPrimary else palette.text)
+                }
+            }
+        }
+
+        override fun setPressed(pressed: Boolean) {
+            super.setPressed(pressed)
+            paint(pressed)
         }
     }
-
-    private fun dp(context: Context, value: Int): Int =
-        (value * context.resources.displayMetrics.density).toInt()
 }

@@ -27,7 +27,10 @@ internal class SessionRevocations(private val secure: SecureStore, private val a
         for (entry in synchronized(lock) { read() }) {
             val result = api.postJsonDetailed("/v1/sdk/session/revoke", Body(entry.anonymousId), Body.serializer(),
                 requiresSubject = false, subjectTokenOverride = entry.token)
-            if (!result.success && result.status != 401) return@withLock
+            // An expired credential or an alias it no longer owns cannot
+            // authorize this cleanup on any later retry. Do not block the
+            // next installation's push registration on a terminal rejection.
+            if (!result.success && result.status !in setOf(401, 403)) return@withLock
             synchronized(lock) { write(read().filterNot { it.id == entry.id }) }
         }
     }

@@ -1,31 +1,23 @@
 package studio.usergist.feedback.internal.ui
 
 import android.content.DialogInterface
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.graphics.Typeface
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.widget.AppCompatImageButton
 import androidx.core.os.bundleOf
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.doOnLayout
-import androidx.core.view.updatePadding
-import coil.load
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import com.google.android.material.button.MaterialButton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -44,10 +36,30 @@ import studio.usergist.feedback.internal.ui.questions.NpsQuestionView
 import studio.usergist.feedback.internal.ui.questions.QuestionView
 import studio.usergist.feedback.internal.ui.questions.RatingQuestionView
 import studio.usergist.feedback.internal.ui.questions.ShortTextQuestionView
+import studio.usergist.feedback.internal.ui.surface.BoundedScrollView
+import studio.usergist.feedback.internal.ui.surface.CONTENT_MAX_WIDTH_DP
+import studio.usergist.feedback.internal.ui.surface.MeasureLayout
+import studio.usergist.feedback.internal.ui.surface.ReservedHeightFrame
+import studio.usergist.feedback.internal.ui.surface.SurfaceButton
+import studio.usergist.feedback.internal.ui.surface.SurfaceHeader
+import studio.usergist.feedback.internal.ui.surface.SurfaceNavigation
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.detach
+import studio.usergist.feedback.internal.ui.surface.dpF
+import studio.usergist.feedback.internal.ui.surface.dpPx
+import studio.usergist.feedback.internal.ui.surface.keepFocusedFieldVisible
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.surfaceClose
+import studio.usergist.feedback.internal.ui.surface.surfaceText
 
 /**
- * React Native-parity feedback prompt: one question at a time with
- * tap-to-select auto-advance and an explicit close affordance.
+ * Feedback bottom sheet (port of RN ui/PromptSheet.tsx): one question at a
+ * time with tap-to-select auto-advance.
+ *
+ * The sheet background always spans the full window width with the theme's
+ * top radius. The header sits at the safe edges (Close leading, no Back);
+ * the question and the full-width Next/Submit footer share one centred
+ * 560dp readable column in both orientations.
  */
 internal class PromptSheetFragment : BottomSheetDialogFragment() {
 
@@ -60,11 +72,16 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
     private val handler = Handler(Looper.getMainLooper())
     private var pendingAdvance: Runnable? = null
     private lateinit var resolvedTheme: ResolvedTheme
-    private lateinit var titleView: TextView
-    private lateinit var subtitleView: TextView
-    private lateinit var imageView: ImageView
+    private lateinit var palette: SurfacePalette
+
+    private lateinit var container: ReservedHeightFrame
+    private lateinit var header: SurfaceHeader
     private lateinit var questionSlot: FrameLayout
-    private lateinit var nextButton: MaterialButton
+    private lateinit var footer: FrameLayout
+    private lateinit var stepView: TextView
+    private var nextButton: SurfaceButton? = null
+    private var nextVisible = false
+    private var nextDisabled = false
 
     override fun getTheme(): Int = R.style.UserGist_BottomSheet
 
@@ -72,7 +89,7 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         inflater: LayoutInflater,
         container: ViewGroup?,
         savedInstanceState: Bundle?,
-    ): View = inflater.inflate(R.layout.usergist_prompt_sheet, container, false)
+    ): View = ReservedHeightFrame(inflater.context).also { this.container = it }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -93,40 +110,45 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         clientPrompt = prompt
         hostTheme = theme
         shownAtMs = System.currentTimeMillis()
-
-        titleView = view.findViewById(R.id.usergist_title)
-        subtitleView = view.findViewById(R.id.usergist_subtitle)
-        imageView = view.findViewById(R.id.usergist_question_image)
-        questionSlot = view.findViewById(R.id.usergist_question_slot)
-        nextButton = view.findViewById(R.id.usergist_next)
-        val closeButton = view.findViewById<AppCompatImageButton>(R.id.usergist_close)
-        val handleView = view.findViewById<View>(R.id.usergist_handle)
-        val sheetRoot = view.findViewById<LinearLayout>(R.id.usergist_prompt_root)
-
         resolvedTheme = ThemeResolver.merge(prompt.theme, hostTheme)
-        applyTheme(sheetRoot, resolvedTheme, titleView, subtitleView, nextButton, closeButton, handleView)
+        palette = SurfacePalette.from(resolvedTheme)
 
-        nextButton.setOnClickListener { advance() }
-        closeButton.setOnClickListener {
-            deliverResponse(dismissed = true, answers = orderedAnswers())
-            dismissAllowingStateLoss()
-        }
-
+        buildSheet()
         renderCurrentQuestion(animated = false)
-
         notifyShown(prompt.id)
     }
 
     override fun onStart() {
         super.onStart()
-        dialog?.window?.setDimAmount(0.4f)
+        dialog?.window?.apply {
+            setDimAmount(0.45f)
+            @Suppress("DEPRECATION")
+            setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+        }
         val bottomSheet = dialog?.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
         bottomSheet?.let {
+            // Our own view draws the themed, top-rounded background.
+            it.background = null
             BottomSheetBehavior.from(it).apply {
+                maxWidth = ViewGroup.LayoutParams.MATCH_PARENT // full width in landscape too
                 skipCollapsed = true
                 state = BottomSheetBehavior.STATE_EXPANDED
             }
         }
+        if (::container.isInitialized) {
+            val activityInsets = activity?.window?.decorView?.let(ViewCompat::getRootWindowInsets)
+            val top = activityInsets
+                ?.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+                ?.top ?: 0
+            container.reservePx = top + requireContext().dpPx(if (isLandscape()) 12 else 16)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Hosts that handle rotation themselves keep this fragment; rebuild
+        // the footer action for the new configuration.
+        if (::header.isInitialized) placeNextButton()
     }
 
     override fun onDestroyView() {
@@ -146,6 +168,93 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         deliveredOnce?.let { /* no-op — avoid double deliver */ }
     }
 
+    // ---------------- Layout ----------------
+
+    private fun buildSheet() {
+        val ctx = requireContext()
+        val radius = ctx.dpF(palette.radiusDp)
+        val sheet = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            background = android.graphics.drawable.GradientDrawable().apply {
+                cornerRadii = floatArrayOf(radius, radius, radius, radius, 0f, 0f, 0f, 0f)
+                setColor(palette.background)
+            }
+        }
+        ViewCompat.setOnApplyWindowInsetsListener(sheet) { target, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
+            val minBottom = ctx.dpPx(if (isLandscape()) 12 else 16)
+            target.setPadding(
+                safe.left + ctx.dpPx(12),
+                ctx.dpPx(8),
+                safe.right + ctx.dpPx(12),
+                maxOf(safe.bottom, minBottom),
+            )
+            insets
+        }
+
+        header = SurfaceHeader(ctx)
+        header.setLeading(ctx.surfaceClose(palette, getString(R.string.usergist_close)) {
+            deliverResponse(dismissed = true, answers = orderedAnswers())
+            dismissAllowingStateLoss()
+        })
+        stepView = ctx.surfaceText(palette, null, 13f, palette.subtext, 600)
+        header.setCenter(stepView)
+        sheet.addView(header.view, matchWidth())
+
+        // One centred readable column for the question and the portrait footer.
+        val measure = MeasureLayout(ctx, ctx.dpPx(CONTENT_MAX_WIDTH_DP)).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val scroll = BoundedScrollView(ctx).apply {
+            isFillViewport = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isVerticalScrollBarEnabled = false
+            keepFocusedFieldVisible(ctx.dpPx(12))
+        }
+        questionSlot = FrameLayout(ctx).apply {
+            setPadding(ctx.dpPx(12), ctx.dpPx(4), ctx.dpPx(12), ctx.dpPx(20))
+        }
+        scroll.addView(questionSlot, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        // Weighted wrap-content children shrink when the sheet runs out of height,
+        // so the footer stays visible and the question scrolls (keyboard included).
+        measure.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        footer = FrameLayout(ctx).apply { setPadding(ctx.dpPx(12), ctx.dpPx(4), ctx.dpPx(12), 0) }
+        measure.addView(footer, matchWidth())
+        sheet.addView(measure, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
+
+        container.addView(sheet, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM))
+        ViewCompat.requestApplyInsets(sheet)
+    }
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    /**
+     * Feedback has no Back: Close leads, the trailing slot stays empty, and
+     * Next/Submit is one full-width footer action in both orientations.
+     */
+    private fun placeNextButton() {
+        val ctx = context ?: return
+        val prompt = clientPrompt ?: return
+        val isLast = currentIndex >= prompt.questions.lastIndex
+        val button = SurfaceButton(ctx, palette, if (isLast) "Submit" else "Next").apply {
+            setDisabled(nextDisabled)
+            setOnAction { advance() }
+        }
+        nextButton?.detach()
+        nextButton = button
+        val nav = SurfaceNavigation.resolve(canGoBack = false, hasMainAction = nextVisible)
+        header.setTrailing()
+        footer.removeAllViews()
+        footer.visibility = if (nav.footerAction) View.VISIBLE else View.GONE
+        if (nav.footerAction) {
+            footer.addView(button, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+    }
+
     // ---------------- Rendering helpers ----------------
 
     private fun renderCurrentQuestion(animated: Boolean) {
@@ -154,26 +263,13 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         pendingAdvance?.let(handler::removeCallbacks)
         pendingAdvance = null
 
-        titleView.text = question.title
-        val centered = question is Question.Rating || question is Question.Nps
-        titleView.gravity = if (centered) Gravity.CENTER_HORIZONTAL else Gravity.START
-        subtitleView.gravity = if (centered) Gravity.CENTER_HORIZONTAL else Gravity.START
-        question.subtitle?.takeIf { it.isNotBlank() }?.let {
-            subtitleView.text = it
-            subtitleView.visibility = View.VISIBLE
-        } ?: run {
-            subtitleView.text = null
-            subtitleView.visibility = View.GONE
-        }
-        renderImage(question)
+        stepView.text = if (prompt.questions.size > 1) "${currentIndex + 1} of ${prompt.questions.size}" else null
+        stepView.visibility = if (prompt.questions.size > 1) View.VISIBLE else View.GONE
 
         val rendered = buildQuestionView(question, resolvedTheme)
         questionView = rendered
         questionSlot.removeAllViews()
-        questionSlot.addView(rendered.view)
-        val slotParams = questionSlot.layoutParams as LinearLayout.LayoutParams
-        slotParams.topMargin = dpToPx(spacingBeforeControl(question, !question.subtitle.isNullOrBlank()))
-        questionSlot.layoutParams = slotParams
+        questionSlot.addView(rendered.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
         rendered.onValueChange = valueChange@ { answer ->
             if (questionView !== rendered) return@valueChange
@@ -191,62 +287,38 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
 
         if (animated) {
             questionSlot.alpha = 0f
-            questionSlot.translationX = dpToPx(36).toFloat()
+            questionSlot.translationX = requireContext().dpPx(36).toFloat()
             questionSlot.animate()
                 .alpha(1f)
                 .translationX(0f)
                 .setDuration(240)
+                .setInterpolator(android.view.animation.DecelerateInterpolator(1.5f))
                 .start()
         }
     }
 
     private fun buildQuestionView(question: Question, theme: ResolvedTheme): QuestionView {
         val ctx = requireContext()
+        val previous = answers[question.id] as? PromptAnswerValue.Number
         return when (question) {
             is Question.Rating -> RatingQuestionView(ctx, question, theme)
-            is Question.Nps -> NpsQuestionView(ctx, question, theme)
+            is Question.Nps -> NpsQuestionView(ctx, question, theme, initialScore = previous?.value?.toInt())
             is Question.MultipleChoice -> MultipleChoiceQuestionView(ctx, question, theme)
             is Question.ShortText -> ShortTextQuestionView(ctx, question, theme)
         }
     }
 
-    private fun renderImage(question: Question) {
-        val url = when (question) {
-            is Question.Rating -> question.imageUrl
-            is Question.Nps -> question.imageUrl
-            is Question.MultipleChoice -> question.imageUrl
-            is Question.ShortText -> question.imageUrl
-        }
-        if (url.isNullOrBlank()) {
-            imageView.visibility = View.GONE
-            imageView.setImageDrawable(null)
-            return
-        }
-        imageView.visibility = View.VISIBLE
-        imageView.doOnLayout { image ->
-            val params = image.layoutParams
-            val desired = image.width * 9 / 16
-            if (params.height != desired) {
-                params.height = desired
-                image.layoutParams = params
-            }
-        }
-        imageView.background = GradientDrawable().apply {
-            cornerRadius = (resolvedTheme.radiusDp ?: 20) * resources.displayMetrics.density
-            setColor(Color.TRANSPARENT)
-        }
-        imageView.clipToOutline = true
-        imageView.load(url) { crossfade(true) }
-    }
-
     private fun updateNextButton(question: Question) {
         val visible = PromptFlow.needsExplicitNext(question)
-        nextButton.visibility = if (visible) View.VISIBLE else View.GONE
         val requiresAnswer = question is Question.ShortText ||
             (question is Question.Nps && !question.followUp.isNullOrEmpty())
-        val enabled = !requiresAnswer || questionView?.isSubmittable() == true
-        nextButton.isEnabled = enabled
-        nextButton.alpha = if (enabled) 1f else 0.4f
+        val disabled = requiresAnswer && questionView?.isSubmittable() != true
+        val changed = visible != nextVisible || nextButton == null
+        nextVisible = visible
+        nextDisabled = disabled
+        if (changed) placeNextButton() else nextButton?.setDisabled(disabled)
+        val prompt = clientPrompt ?: return
+        nextButton?.label = if (currentIndex >= prompt.questions.lastIndex) "Submit" else "Next"
     }
 
     private fun scheduleAdvance(questionId: String) {
@@ -275,70 +347,6 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
     private fun orderedAnswers(): List<PromptAnswerInfo> {
         val prompt = clientPrompt ?: return emptyList()
         return PromptFlow.orderedAnswers(prompt, answers)
-    }
-
-    private fun spacingBeforeControl(question: Question, hasSubtitle: Boolean): Int = when (question) {
-        is Question.Rating -> if (hasSubtitle) 24 else 12
-        is Question.Nps -> if (hasSubtitle) 24 else 16
-        is Question.MultipleChoice -> if (hasSubtitle) 16 else 12
-        is Question.ShortText -> if (hasSubtitle) 12 else 4
-    }
-
-    private fun applyTheme(
-        root: View,
-        theme: ResolvedTheme,
-        title: TextView,
-        subtitle: TextView,
-        nextBtn: MaterialButton,
-        closeBtn: AppCompatImageButton,
-        handle: View,
-    ) {
-        val radiusPx = theme.radiusDp?.let { dpToPx(it) } ?: dpToPx(16)
-        val bg = theme.background ?: Color.WHITE
-        val shape = GradientDrawable().apply {
-            cornerRadii = floatArrayOf(
-                radiusPx.toFloat(), radiusPx.toFloat(),
-                radiusPx.toFloat(), radiusPx.toFloat(),
-                0f, 0f,
-                0f, 0f,
-            )
-            setColor(bg)
-        }
-        root.background = shape
-        ViewCompat.setOnApplyWindowInsetsListener(root) { target, insets ->
-            val systemBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
-            target.updatePadding(bottom = maxOf(dpToPx(30), systemBottom) + dpToPx(16))
-            insets
-        }
-        ViewCompat.requestApplyInsets(root)
-
-        theme.text?.let {
-            title.setTextColor(it)
-            closeBtn.imageTintList = ColorStateList.valueOf(it)
-        }
-        theme.subtext?.let { subtitle.setTextColor(it) }
-        theme.primary?.let {
-            nextBtn.backgroundTintList = ColorStateList.valueOf(it)
-        }
-        nextBtn.setTextColor(Color.WHITE)
-        nextBtn.cornerRadius = dpToPx(26)
-        val family = Typeface.create(theme.fontFamily, Typeface.NORMAL)
-        title.typeface = Typeface.create(theme.fontFamily, Typeface.BOLD)
-        subtitle.typeface = family
-        nextBtn.typeface = Typeface.create(theme.fontFamily, Typeface.BOLD)
-        handle.background = GradientDrawable().apply {
-            cornerRadius = dpToPx(2).toFloat()
-            setColor(theme.border ?: Color.rgb(229, 229, 229))
-        }
-        closeBtn.background = GradientDrawable().apply {
-            this.shape = GradientDrawable.OVAL
-            setColor(Color.argb(15, 0, 0, 0))
-        }
-    }
-
-    private fun dpToPx(dp: Int): Int {
-        val density = resources.displayMetrics.density
-        return (dp * density).toInt()
     }
 
     // ---------------- Callback delivery ----------------

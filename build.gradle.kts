@@ -13,7 +13,7 @@ android {
     defaultConfig {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
-        buildConfigField("String", "SDK_VERSION", "\"0.2.0\"")
+        buildConfigField("String", "SDK_VERSION", "\"0.2.1\"")
     }
 
     compileOptions {
@@ -46,7 +46,8 @@ android {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
+    // JsonObject is exposed by public JSON action callbacks and model fields.
+    api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.8.2")
     implementation("com.google.android.material:material:1.12.0")
@@ -65,7 +66,7 @@ dependencies {
 }
 
 group = "com.usergist"
-version = "0.2.0"
+version = "0.2.1"
 
 publishing {
     repositories {
@@ -80,7 +81,7 @@ publishing {
             afterEvaluate { from(components["release"]) }
             groupId = "com.usergist"
             artifactId = "feedback"
-            version = "0.2.0"
+            version = "0.2.1"
             pom {
                 name.set("userGist Feedback SDK")
                 description.set("userGist mobile feedback SDK for Android")

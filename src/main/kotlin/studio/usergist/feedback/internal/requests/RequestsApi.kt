@@ -48,6 +48,8 @@ data class RequestComment(
 internal class RequestsApi(
     private val apiClient: ApiClient,
     private val json: Json,
+    private val canRead: () -> Boolean,
+    private val canWrite: () -> Boolean,
 ) {
 
     suspend fun list(
@@ -55,6 +57,7 @@ internal class RequestsApi(
         externalId: String?,
         options: GetRequestsOptions,
     ): GetRequestsResult? {
+        if (!canRead()) return GetRequestsResult(emptyList(), null)
         val query = buildMap<String, String?> {
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
@@ -83,6 +86,7 @@ internal class RequestsApi(
         anonymousId: String,
         externalId: String?,
     ): FeatureRequest? {
+        if (!canRead()) return null
         val query = buildMap<String, String?> {
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
@@ -103,6 +107,7 @@ internal class RequestsApi(
         title: String,
         description: String,
     ): FeatureRequest? {
+        if (!canWrite()) return null
         val body = buildJsonObject {
             put("idempotencyKey", UUID.randomUUID().toString())
             put("anonymousId", anonymousId)
@@ -127,6 +132,7 @@ internal class RequestsApi(
         externalId: String?,
         vote: Boolean,
     ): RequestVote? {
+        if (!canWrite()) return null
         val body = buildJsonObject {
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
@@ -155,6 +161,7 @@ internal class RequestsApi(
         externalId: String?,
         follow: Boolean,
     ): RequestFollow? {
+        if (!canWrite()) return null
         val body = buildJsonObject {
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
@@ -184,6 +191,7 @@ internal class RequestsApi(
         anonymousId: String,
         externalId: String?,
     ): List<RequestComment>? {
+        if (!canRead()) return emptyList()
         val query = buildMap<String, String?> {
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
@@ -204,6 +212,7 @@ internal class RequestsApi(
         externalId: String?,
         body: String,
     ): RequestComment? {
+        if (!canWrite()) return null
         val payload = buildJsonObject {
             put("idempotencyKey", UUID.randomUUID().toString())
             put("anonymousId", anonymousId)
@@ -227,6 +236,7 @@ internal class RequestsApi(
         anonymousId: String,
         body: String,
     ): RequestComment? {
+        if (!canWrite()) return null
         val payload = buildJsonObject {
             put("anonymousId", anonymousId)
             put("body", body)
@@ -247,6 +257,7 @@ internal class RequestsApi(
         commentId: String,
         anonymousId: String,
     ): Boolean {
+        if (!canWrite()) return false
         return runCatching {
             apiClient.delete(
                 path = Endpoints.requestComment(requestId, commentId),
@@ -256,6 +267,7 @@ internal class RequestsApi(
     }
 
     suspend fun branding(): RequestBranding? {
+        if (!canRead()) return null
         val raw = runCatching {
             apiClient.getJson(
                 path = Endpoints.REQUEST_BRANDING,

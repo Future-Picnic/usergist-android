@@ -342,6 +342,7 @@ internal class ApiClient(
         .add("Accept", "application/json")
         .add("X-UserGist-SDK-Version", "android/${BuildConfigProxy.SDK_VERSION}")
         .add("X-UserGist-Platform", "android")
+        .add("X-UserGist-Capabilities", "push.json-open.v1")
         .apply {
             (subjectTokenOverride ?: subjectToken)?.let {
                 add("X-UserGist-Subject-Token", it)

@@ -42,6 +42,7 @@ import studio.usergist.feedback.internal.SecureStore
 import studio.usergist.feedback.internal.UserGistLogger
 import studio.usergist.feedback.internal.Storage
 import studio.usergist.feedback.internal.lifecycle.AppLifecycleObserver
+import studio.usergist.feedback.internal.lifecycle.AppOpenGate
 import studio.usergist.feedback.internal.model.ArmedTrigger
 import studio.usergist.feedback.internal.model.ClientPrompt
 import studio.usergist.feedback.internal.model.FrequencyCaps
@@ -100,12 +101,13 @@ object UserGist {
     @Volatile private var pushSubscriptionHandler: ((PushSubscriptionState) -> Unit)? = null
     @Volatile private var pushRegistrationKey: String? = null
     @Volatile private var pushRegisteredAt = 0L
+    private val pushPermissionDenied = AtomicBoolean(false)
     private val pushRegistrationAttempt = AtomicReference<String?>(null)
     private val pushMutationMutex = Mutex()
     private fun pushOwnerKey(token: String) = "$anonymousId:${externalId ?: ""}:$token"
     private fun notifyPushSubscription() {
         val token = secureRef.get()?.read(SecureStore.Key.PUSH_TOKEN) ?: studio.usergist.feedback.push.Push.lastToken()
-        val optedIn = consentRef.get()?.get()?.push == true && !resetInProgress.get()
+        val optedIn = consentRef.get()?.get()?.push == true && !resetInProgress.get() && !pushPermissionDenied.get()
         val state = PushSubscriptionState(token != null, optedIn && token != null && pushRegistrationKey == pushOwnerKey(token), optedIn, anonymousId, externalId)
         scope.launch(Dispatchers.Main) { runCatching { pushSubscriptionHandler?.invoke(state) } }
     }
@@ -183,6 +185,7 @@ object UserGist {
 
     private val initialized: AtomicBoolean = AtomicBoolean(false)
     private val configRef: AtomicReference<Config?> = AtomicReference(null)
+    private val screenNameRef = AtomicReference<String?>(null)
     private val appContextRef: AtomicReference<Context?> = AtomicReference(null)
     private val identityRef: AtomicReference<IdentityStore?> = AtomicReference(null)
     private val consentRef: AtomicReference<ConsentStore?> = AtomicReference(null)
@@ -212,8 +215,7 @@ object UserGist {
     private val surveyCooldownByCampaign = HashMap<String, Long>()
     private val pendingPromptCapIds = HashSet<String>()
     private val pendingSurveyCapIds = HashSet<String>()
-    private val appOpenLock = Any()
-    private var appOpenPending = false
+    private val appOpenGate = AppOpenGate()
     private val resetGeneration = AtomicLong(0)
     private val resetInProgress = AtomicBoolean(false)
 
@@ -355,13 +357,20 @@ object UserGist {
     }
 
     /**
-     * Records an event. Safe to call before consent — the event is
-     * queued locally and transmitted once consent is granted.
+     * Records an event only with analytics consent. Denied-period events
+     * are ignored rather than uploaded after a later grant.
      */
     @JvmStatic
     @JvmOverloads
     fun track(eventName: String, properties: Map<String, Any?>? = null) {
         trackWithPurpose(eventName, properties, EventPurpose.ANALYTICS)
+    }
+
+    /** Reports the host screen used by campaign allow/deny lists. */
+    @JvmStatic
+    fun setScreenName(name: String?) {
+        screenNameRef.set(name?.trim()?.take(120)?.takeIf { it.isNotEmpty() })
+        if (initialized.get()) scope.launch { pollInstructions() }
     }
 
     private fun trackWithPurpose(
@@ -371,6 +380,8 @@ object UserGist {
     ) {
         if (!initialized.get()) return
         if (resetInProgress.get()) return
+        val consent = consentRef.get()?.get() ?: return
+        if (if (purpose == EventPurpose.ANALYTICS) consent.analytics != true else consent.feedback != true) return
         if (eventName.isBlank()) {
             UserGistLogger.w("UserGist.track: eventName is blank")
             return
@@ -392,6 +403,8 @@ object UserGist {
         scope.launch {
             try {
                 if (resetInProgress.get() || eventGeneration != resetGeneration.get()) return@launch
+                val currentConsent = consentRef.get()?.get() ?: return@launch
+                if (if (purpose == EventPurpose.ANALYTICS) currentConsent.analytics != true else currentConsent.feedback != true) return@launch
                 val queue = queueRef.get() ?: return@launch
                 queue.enqueue(event)
                 UserGistLogger.d("UserGist.track enqueued '$eventName' (queue=${queue.size()})")
@@ -410,6 +423,10 @@ object UserGist {
 
     /** Call after startup navigation and the loaded screen are ready. */
     @JvmStatic fun resumePresentation() { SdkModalCoordinator.setPaused(false) }
+
+    /** Returns the persisted choice; null purposes have not been selected yet. */
+    @JvmStatic
+    fun getConsent(): Consent = consentRef.get()?.get() ?: Consent()
 
     /**
      * Updates consent. Transport remains blocked until at least one purpose is
@@ -497,6 +514,7 @@ object UserGist {
                         storageRef.get()?.let { it.delete(it.userStateFile) }
                         check(secureRef.get()?.delete(SecureStore.Key.SUBJECT_TOKEN) == true) { "Unable to clear subject credential" }
                         subjectTokenRef.set(null)
+                        pushPermissionDenied.set(false)
                         pushRegistrationKey = null
                         pushRegistrationAttempt.set(null)
                         studio.usergist.feedback.push.Push.reset()
@@ -507,7 +525,7 @@ object UserGist {
                         synchronized(pendingPromptCapIds) { pendingPromptCapIds.clear() }
                         synchronized(pendingSurveyCapIds) { pendingSurveyCapIds.clear() }
                         synchronized(userStateLock) { eventHistory.clear() }
-                        synchronized(appOpenLock) { appOpenPending = false }
+                        appOpenGate.reset()
                         apiRef.get()?.setSubjectToken(null)
                         pendingReset = null
                     }
@@ -537,6 +555,7 @@ object UserGist {
     @JvmStatic
     fun setThemeOverrides(theme: PromptTheme) {
         themeOverridesRef.set(theme)
+        studio.usergist.feedback.internal.ui.requests.RequestsHostTheme.theme = theme
         presenterRef.get()?.setThemeOverrides(theme)
         inAppPresenterRef.get()?.setThemeOverrides(theme)
     }
@@ -687,6 +706,7 @@ object UserGist {
                         language = language,
                         sdkVersion = BuildConfig.SDK_VERSION,
                         appVersion = appVersion(context),
+                        platform = "android",
                     ),
                     serializer = SdkSurveyAttemptRequest.serializer(),
                     deserializer = SdkSurveyAttemptSession.serializer(),
@@ -841,11 +861,6 @@ object UserGist {
                     if (resetInProgress.get() || generation != resetGeneration.get()) return@launch
                     val api = apiRef.get() ?: return@launch
                     val consent = consentRef.get()?.get() ?: return@launch
-                    if (!consent.allowsPush) {
-                        notifyPushSubscription()
-                        UserGistLogger.d("push register skipped: consent not granted")
-                        return@launch
-                    }
                     val identity = identityRef.get()?.load() ?: return@launch
                     val context = appContextRef.get()
                     val appVersion = try {
@@ -856,6 +871,27 @@ object UserGist {
                     revocations?.drain()
                     if (revocations?.isPending() == true || resetInProgress.get() || generation != resetGeneration.get()) return@launch
                     val key = pushOwnerKey(token)
+                    val permissionDenied = android.os.Build.VERSION.SDK_INT >= 24 &&
+                        (context?.getSystemService(Context.NOTIFICATION_SERVICE) as? android.app.NotificationManager)?.areNotificationsEnabled() == false
+                    pushPermissionDenied.set(permissionDenied)
+                    if (permissionDenied || !consent.allowsPush) {
+                        val deniedKey = "denied:$key"
+                        if (pushRegistrationKey != deniedKey) {
+                            pushRegistrationKey = null
+                            pushRegisteredAt = 0L
+                            notifyPushSubscription()
+                            val invalidated = api.postJson(
+                                path = Endpoints.PUSH_INVALIDATE_TOKEN,
+                                body = SdkInvalidateTokenPayload(identity.anonymousId, token),
+                                serializer = SdkInvalidateTokenPayload.serializer(),
+                            )
+                            if (invalidated && !resetInProgress.get() && generation == resetGeneration.get() && key == pushOwnerKey(token)) {
+                                pushRegistrationKey = deniedKey
+                            }
+                        }
+                        notifyPushSubscription()
+                        return@launch
+                    }
                     if (pushRegistrationKey == key && System.currentTimeMillis() - pushRegisteredAt < 86_400_000) return@launch
                     if (!pushRegistrationAttempt.compareAndSet(null, key)) return@launch
                     attempt = key
@@ -1375,6 +1411,7 @@ object UserGist {
         syncJob = scope.launch {
             // Initial refresh quickly after init.
             try {
+                emitAppVersionChanged()
                 delay(1_000)
                 refreshArmedTriggers()
                 requestAppOpen()
@@ -1406,34 +1443,32 @@ object UserGist {
     }
 
     private fun onBackground() {
+        appOpenGate.background()
         UserGistLogger.d("UserGist: app entered background — flushing")
         flushAsync()
     }
 
+    private fun emitAppVersionChanged() {
+        val context = appContextRef.get() ?: return
+        val current = appVersion(context)?.takeIf { it.isNotEmpty() } ?: return
+        val storage = storageRef.get() ?: return
+        val file = java.io.File(storage.rootDir, "app_version.txt")
+        val previous = storage.readText(file)
+        // Record denied-period upgrades without replaying them on a later grant.
+        if (!storage.writeText(file, current)) return
+        if (previous.isNullOrEmpty() || previous == current || consentRef.get()?.get()?.analytics != true) return
+        trackWithPurpose("\$app_version_changed", mapOf("old_version" to previous, "new_version" to current), EventPurpose.ANALYTICS)
+    }
+
     private fun requestAppOpen() {
-        val shouldEmit = synchronized(appOpenLock) {
-            if (consentRef.get()?.get()?.feedback == true) {
-                appOpenPending = false
-                true
-            } else {
-                appOpenPending = true
-                false
-            }
-        }
+        val shouldEmit = appOpenGate.request(consentRef.get()?.get()?.feedback == true)
         if (shouldEmit) {
             trackWithPurpose("\$app_open", null, EventPurpose.FEEDBACK)
         }
     }
 
     private fun emitPendingAppOpenIfReady() {
-        val shouldEmit = synchronized(appOpenLock) {
-            if (appOpenPending && consentRef.get()?.get()?.feedback == true) {
-                appOpenPending = false
-                true
-            } else {
-                false
-            }
-        }
+        val shouldEmit = appOpenGate.grant(consentRef.get()?.get()?.feedback == true)
         if (shouldEmit) {
             trackWithPurpose("\$app_open", null, EventPurpose.FEEDBACK)
         }
@@ -1451,13 +1486,19 @@ object UserGist {
         retryPushRegistration()
         flushMutations()
         val consent = consentRef.get()?.get() ?: return
-        if (consent.analytics != true && consent.feedback != true) return
+        if (consent.analytics != true && consent.feedback != true) {
+            if (consent.survey == true) pollInstructions()
+            return
+        }
         val queue = queueRef.get() ?: return
         val api = apiRef.get() ?: return
         val config = configRef.get() ?: return
         val appCtx = appContextRef.get() ?: return
         val pending = queue.peek(Int.MAX_VALUE).toMutableList()
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) {
+            pollInstructions()
+            return
+        }
         val acknowledgedIds = LinkedHashSet<String>()
         try {
             while (pending.isNotEmpty()) {
@@ -1472,7 +1513,9 @@ object UserGist {
                 val first = allowed.firstOrNull() ?: break
                 val events = allowed.filter {
                     it.anonymousId == first.anonymousId && it.externalId == first.externalId
-                }.take(config.flushBatchSize)
+                // Native immediate-delivery authorization is limited to 20
+                // event IDs. Every acknowledged event must receive evaluation.
+                }.take(minOf(config.flushBatchSize, 20))
                 if (events.isEmpty()) break
                 val context = ContextBuilder.build(
                     context = appCtx,
@@ -1542,9 +1585,13 @@ object UserGist {
             val seen = LinkedHashSet(stored.seen)
             val result = api.getJson(
                 path = Endpoints.INSTRUCTIONS,
-                query = mapOf("after" to stored.cursor.toString(), "limit" to "100",
-                    "protocolVersion" to "2", "platform" to "android", "anonymousId" to anonymousId,
-                    "sdkVersion" to BuildConfig.SDK_VERSION),
+                query = buildMap {
+                    put("after", stored.cursor.toString()); put("limit", "100")
+                    put("protocolVersion", "2"); put("platform", "android"); put("anonymousId", anonymousId)
+                    put("screenName", screenNameRef.get() ?: "")
+                    put("sdkVersion", BuildConfig.SDK_VERSION)
+                    appContextRef.get()?.let(::appVersion)?.let { put("appVersion", it) }
+                },
                 deserializer = InstructionEnvelope.serializer(),
             ) ?: return@withLock
             if (result.instructions.isEmpty()) return@withLock
@@ -1649,6 +1696,9 @@ object UserGist {
                     return
                 }
                 if (message.messageId.isBlank() || message.title.isBlank()) return
+                val screen = screenNameRef.get() ?: ""
+                if ((message.screenAllowlist.isNotEmpty() && !message.screenAllowlist.contains(screen)) ||
+                    message.screenDenylist.contains(screen)) return
                 val triggerEventId = (payload["triggerEventId"] as? JsonPrimitive)?.content
                 if (triggerEventId != null && consumeLocalInstruction(
                         "inapp.show",
@@ -1657,7 +1707,13 @@ object UserGist {
                     )
                 ) return
                 val presenter = inAppPresenterRef.get() ?: return
-                val isValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)
+                val consentValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)
+                val isValid = {
+                    val currentScreen = screenNameRef.get() ?: ""
+                    consentValid() &&
+                        (message.screenAllowlist.isEmpty() || message.screenAllowlist.contains(currentScreen)) &&
+                        !message.screenDenylist.contains(currentScreen)
+                }
                 scope.launch {
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
                         presenter.present(message, isValid)
@@ -1954,6 +2010,9 @@ object UserGist {
             answers = answers,
             dismissed = info.dismissed,
             latencyMs = info.latencyMs.coerceAtMost(3_600_000).toInt(),
+            platform = "android",
+            sdkVersion = BuildConfig.SDK_VERSION,
+            appVersion = appContextRef.get()?.let(::appVersion),
         )
         trackWithPurpose(
             "\$feedback_response",
@@ -2212,6 +2271,11 @@ object UserGist {
         val answers: List<SdkResponseAnswer>,
         val dismissed: Boolean,
         val latencyMs: Int,
+        // Older persisted responses have no context; keep them retryable.
+        // New submissions supply both fields explicitly above.
+        val platform: String? = null,
+        val sdkVersion: String? = null,
+        val appVersion: String? = null,
     )
 
     @kotlinx.serialization.Serializable
@@ -2359,7 +2423,11 @@ object UserGist {
 
     private fun requestsApi(): studio.usergist.feedback.internal.requests.RequestsApi? {
         val api = apiRef.get() ?: return null
-        return studio.usergist.feedback.internal.requests.RequestsApi(api, json)
+        return studio.usergist.feedback.internal.requests.RequestsApi(
+            api, json,
+            canRead = { consentRef.get()?.get()?.allowsTransport == true },
+            canWrite = { consentRef.get()?.get()?.feedback == true },
+        )
     }
 
     /** Open the SDK-provided requests board UI. */

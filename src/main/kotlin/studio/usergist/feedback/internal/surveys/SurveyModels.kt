@@ -133,7 +133,7 @@ internal data class SdkSurveyAttemptRequest(
     val resume: Boolean = true,
     val sdkVersion: String,
     val appVersion: String? = null,
-    val platform: String = "android",
+    val platform: String,
 )
 
 @Serializable

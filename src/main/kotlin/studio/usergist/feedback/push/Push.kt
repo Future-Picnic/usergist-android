@@ -37,6 +37,7 @@ data class UserGistPushMessage(
     val androidChannelId: String?,
     val actions: String?,
     val actionButtons: List<PushActionButton> = emptyList(),
+    val openAction: PushOpenAction? = null,
 ) {
     companion object {
         /** Parses a UserGist envelope from an FCM data map. */
@@ -50,6 +51,9 @@ data class UserGistPushMessage(
                 deepLink = data["usergist_deep_link"],
                 actions = data["usergist_actions"],
                 actionButtons = parseActions(data["usergist_actions"]),
+                openAction = data["usergist_open_action"]?.let { raw ->
+                    runCatching { Json { ignoreUnknownKeys = true }.decodeFromString<PushOpenAction>(raw) }.getOrNull()
+                },
                 title = title ?: data["usergist_title"],
                 body = body ?: data["usergist_body"],
                 imageUrl = data["usergist_image_url"],
@@ -65,6 +69,13 @@ data class UserGistPushMessage(
         }
     }
 }
+
+@Serializable
+data class PushOpenAction(
+    val action: String,
+    val target: String? = null,
+    val actionJson: JsonObject? = null,
+)
 
 @Serializable
 data class PushActionButton(
@@ -332,7 +343,12 @@ object Push {
         } else {
             UserGist.trackPushEvent("\$push_opened", msg, actionButton = null)
             emitSdkEvent("\$push_opened", eventProperties(msg))
-            handlers.onOpen?.invoke(msg)
+            runCatching { handlers.onOpen?.invoke(msg) }
+            if (msg.openAction?.action == "json") {
+                msg.openAction.actionJson?.let {
+                    runCatching { handlers.onJsonAction?.invoke(it, msg, "usergist_default") }
+                }
+            }
         }
     }
 

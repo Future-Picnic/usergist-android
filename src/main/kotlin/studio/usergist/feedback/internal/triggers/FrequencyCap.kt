@@ -39,7 +39,7 @@ internal class FrequencyCapStore(
             val perPrompt = caps.perPromptDays
             if (perPrompt != null && perPrompt > 0) {
                 val cutoff = now - daysToMs(perPrompt)
-                if (state[promptId].orEmpty().any { it >= cutoff }) {
+                if (state[promptId].orEmpty().any { it > cutoff }) {
                     UserGistLogger.d("FrequencyCap: blocked $promptId by per-prompt cap ($perPrompt d)")
                     return false
                 }
@@ -47,7 +47,7 @@ internal class FrequencyCapStore(
             val perUser = caps.perUserDays
             if (perUser != null && perUser > 0) {
                 val cutoff = now - daysToMs(perUser)
-                if (state[USER_CAP_KEY].orEmpty().any { it >= cutoff }) {
+                if (state[USER_CAP_KEY].orEmpty().any { it > cutoff }) {
                     UserGistLogger.d("FrequencyCap: blocked $promptId by per-user cap ($perUser d)")
                     return false
                 }

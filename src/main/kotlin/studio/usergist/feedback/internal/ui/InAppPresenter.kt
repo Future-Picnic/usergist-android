@@ -65,6 +65,7 @@ internal class InAppPresenter(
         }
         val fm = activity.supportFragmentManager
         if (fm.isStateSaved || fm.isDestroyed) return false
+        SdkModalCoordinator.observeDismissals(fm)
         if (fm.findFragmentByTag(INAPP_FRAGMENT_TAG) != null ||
             fm.findFragmentByTag(PROMPT_FRAGMENT_TAG) != null
         ) {

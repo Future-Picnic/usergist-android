@@ -1,70 +1,77 @@
 package studio.usergist.feedback.internal.surveys
 
-import android.app.DatePickerDialog
 import android.content.Intent
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.text.Editable
-import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.CheckBox
 import android.widget.FrameLayout
-import android.widget.ImageButton
-import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
-import android.widget.TextView
 import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.graphics.ColorUtils
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import coil.load
-import com.google.android.material.button.MaterialButton
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
-import com.google.android.material.textfield.TextInputLayout
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import studio.usergist.feedback.R
-import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.ui.ResolvedTheme
-import studio.usergist.feedback.internal.ui.questions.RatingQuestionView
-import studio.usergist.feedback.internal.ui.questions.styleTextAnswer
-import studio.usergist.feedback.internal.util.DateTime
+import studio.usergist.feedback.internal.ui.surface.CONTENT_MAX_WIDTH_DP
+import studio.usergist.feedback.internal.ui.surface.Glyph
+import studio.usergist.feedback.internal.ui.surface.GlyphView
+import studio.usergist.feedback.internal.ui.surface.HeaderControl
+import studio.usergist.feedback.internal.ui.surface.SurfaceNavigation
+import studio.usergist.feedback.internal.ui.surface.MeasureLayout
+import studio.usergist.feedback.internal.ui.surface.SurfaceButton
+import studio.usergist.feedback.internal.ui.surface.SurfaceHeader
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.accessibilityHeading
+import studio.usergist.feedback.internal.ui.surface.detach
+import studio.usergist.feedback.internal.ui.surface.dpPx
+import studio.usergist.feedback.internal.ui.surface.keepFocusedFieldVisible
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.oval
+import studio.usergist.feedback.internal.ui.surface.roundRect
+import studio.usergist.feedback.internal.ui.surface.surfaceBack
+import studio.usergist.feedback.internal.ui.surface.surfaceClose
+import studio.usergist.feedback.internal.ui.surface.surfaceText
 
-/** Full-screen native renderer for the server-authored survey graph. */
+/**
+ * Full-screen native renderer for the server-authored survey graph
+ * (port of RN ui/SurveyView.tsx). Header (both orientations): Back leading +
+ * Close trailing when Back is usable, otherwise Close leading; progress sits
+ * in the centre. Next/Submit (and the end-screen CTA) is one full-width
+ * footer action in the centred 560dp column, outside the scroll and above
+ * the gesture bar and keyboard.
+ */
 internal class SurveyActivity : AppCompatActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var hostToken: String
     private lateinit var presentation: SurveyPresentation
     private lateinit var resolvedTheme: ResolvedTheme
+    private lateinit var palette: SurfacePalette
     private lateinit var root: LinearLayout
-    private lateinit var header: LinearLayout
-    private lateinit var progressSlot: FrameLayout
+    private lateinit var header: SurfaceHeader
+    private lateinit var scroll: ScrollView
+    private lateinit var body: LinearLayout
     private lateinit var content: LinearLayout
-    private lateinit var nextButton: MaterialButton
-    private lateinit var backButton: ImageButton
-    private var validationText: TextView? = null
+    private lateinit var footer: FrameLayout
+    private lateinit var footerColumn: MeasureLayout
+    private lateinit var closeButton: View
+    private var nextButton: SurfaceButton? = null
+    private var noticeView: View? = null
     private val answers = LinkedHashMap<String, JsonElement>()
     private val history = mutableListOf<String>()
     private var currentQuestionId: String? = null
-    private var ranking = mutableListOf<SdkSurveyChoice>()
     private var submitting = false
     private var ended = false
 
@@ -78,10 +85,15 @@ internal class SurveyActivity : AppCompatActivity() {
         hostToken = resolved.token
         presentation = resolved.presentation
         resolvedTheme = presentation.theme
+        palette = SurfacePalette.from(resolvedTheme)
         SurveyHost.attach(hostToken, this)
         restoreState(savedInstanceState)
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = palette.lightBackground
+            isAppearanceLightNavigationBars = palette.lightBackground
+        }
         buildShell()
         if (ended) renderEndScreen() else renderQuestion()
         onBackPressedDispatcher.addCallback(this) {
@@ -113,80 +125,131 @@ internal class SurveyActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Only reached when a host declares configChanges; otherwise the
+        // activity is recreated and restored from saved state.
+        if (::root.isInitialized) {
+            applyBodyPadding()
+            placeActions()
+        }
+    }
+
+    // ---------------- Shell ----------------
+
+    private fun isLandscape(): Boolean =
+        resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+
     private fun buildShell() {
         root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(resolvedTheme.background ?: resolveColor(
-                com.google.android.material.R.attr.colorSurface,
-                Color.WHITE,
-            ))
+            setBackgroundColor(palette.background)
         }
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
-            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
             insets
         }
 
-        header = LinearLayout(this).apply {
-            gravity = Gravity.CENTER_VERTICAL
-            orientation = LinearLayout.HORIZONTAL
-            minimumHeight = dp(56)
+        header = SurfaceHeader(this)
+        closeButton = surfaceClose(palette, getString(R.string.usergist_close)) {
+            if (ended) finish() else confirmAbandon()
         }
-        backButton = ImageButton(this).apply {
-            setImageResource(androidx.appcompat.R.drawable.abc_ic_ab_back_material)
-            contentDescription = "Back"
-            setBackgroundColor(Color.TRANSPARENT)
-            setColorFilter(textColor())
-            minimumWidth = dp(48)
-            minimumHeight = dp(48)
-            setOnClickListener { goBack() }
+        header.setLeading(closeButton)
+        root.addView(FrameLayout(this).apply {
+            setPadding(dpPx(12), dpPx(if (isLandscape()) 8 else 4), dpPx(12), dpPx(4))
+            addView(header.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }, matchWidth())
+
+        scroll = ScrollView(this).apply {
+            isFillViewport = true
+            overScrollMode = View.OVER_SCROLL_NEVER
+            keepFocusedFieldVisible(dpPx(16))
         }
-        header.addView(backButton, LinearLayout.LayoutParams(dp(48), dp(48)))
-        header.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        header.addView(ImageButton(this).apply {
-            setImageResource(R.drawable.usergist_ic_close)
-            contentDescription = getString(R.string.usergist_close)
-            setBackgroundColor(Color.TRANSPARENT)
-            setColorFilter(textColor())
-            minimumWidth = dp(48)
-            minimumHeight = dp(48)
-            setPadding(dp(12), dp(12), dp(12), dp(12))
-            setOnClickListener { if (ended) finish() else confirmAbandon() }
-        }, LinearLayout.LayoutParams(dp(48), dp(48)))
-        root.addView(header)
-
-        progressSlot = FrameLayout(this)
-        root.addView(progressSlot, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ))
-
-        val scroll = ScrollView(this).apply { isFillViewport = true }
-        content = LinearLayout(this).apply {
+        content = MeasureLayout(this, dpPx(CONTENT_MAX_WIDTH_DP)).apply { orientation = LinearLayout.VERTICAL }
+        body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(28), dp(24), dp(24))
+            addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
         }
-        scroll.addView(content, ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ))
-        root.addView(scroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            0,
-            1f,
-        ))
+        applyBodyPadding()
+        scroll.addView(body, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        nextButton = MaterialButton(this).apply {
-            text = "Next"
-            minHeight = dp(52)
-            cornerRadius = dp(999)
-            backgroundTintList = ColorStateList.valueOf(primaryColor())
-            setTextColor(Color.WHITE)
-            setOnClickListener { advance() }
+        // Footer sits outside the scroll, above the keyboard (root IME padding),
+        // in the same centred readable column as the question.
+        footerColumn = MeasureLayout(this, dpPx(CONTENT_MAX_WIDTH_DP)).apply { orientation = LinearLayout.VERTICAL }
+        footer = FrameLayout(this).apply {
+            setPadding(dpPx(24), dpPx(8), dpPx(24), dpPx(16))
+            addView(footerColumn, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL))
         }
+        root.addView(footer, matchWidth())
         setContentView(root)
     }
+
+    private fun applyBodyPadding() {
+        val landscape = isLandscape()
+        body.setPadding(dpPx(24), dpPx(if (landscape) 8 else 24), dpPx(24), dpPx(if (landscape) 24 else 40))
+    }
+
+    /**
+     * Same in both orientations: Back leading + Close trailing when Back is
+     * usable, else Close leading. The main action is one full-width footer
+     * button; Back never sits in the footer.
+     */
+    private fun placeActions() {
+        val question = currentQuestion()
+        val main: SurfaceButton? = when {
+            ended -> endAction()
+            question != null && !autoAdvances(question.type) -> buildNext(question)
+            else -> null
+        }
+        nextButton = if (ended) null else main
+        val nav = SurfaceNavigation.resolve(
+            canGoBack = canGoBack() && !ended && !submitting,
+            hasMainAction = main != null,
+        )
+        header.setLeading(headerControl(nav.leading))
+        header.setTrailing(headerControl(nav.trailing))
+        footerColumn.removeAllViews()
+        footer.visibility = if (nav.footerAction) View.VISIBLE else View.GONE
+        if (nav.footerAction && main != null) footerColumn.addView(main.detach(), matchWidth())
+    }
+
+    private fun headerControl(control: HeaderControl): View? = when (control) {
+        HeaderControl.BACK -> surfaceBack(palette) { goBack() }
+        HeaderControl.CLOSE -> closeButton
+        HeaderControl.NONE -> null
+    }
+
+    private fun buildNext(question: SdkSurveyQuestion): SurfaceButton {
+        val final = SurveyFlowEvaluator.nextQuestionId(presentation.survey.flow, question.id, answers) == null
+        return SurfaceButton(this, palette, if (final) "Submit" else "Next").apply {
+            loading = submitting
+            setDisabled(nextDisabled(question))
+            setOnAction { advance() }
+        }
+    }
+
+    private fun nextDisabled(question: SdkSurveyQuestion): Boolean {
+        val text = question.type == "short_text" || question.type == "long_text"
+        val needsAnswer = text || (question.required && question.type != "info_screen")
+        return needsAnswer && !SurveyFlowEvaluator.isAnswered(answers[question.id])
+    }
+
+    /** Keeps the Next/Submit label and enabled state in step with the answer. */
+    private fun refreshNext() {
+        val question = currentQuestion() ?: return
+        val button = nextButton ?: return
+        button.setDisabled(nextDisabled(question))
+        val final = SurveyFlowEvaluator.nextQuestionId(presentation.survey.flow, question.id, answers) == null
+        button.label = if (final) "Submit" else "Next"
+    }
+
+    // ---------------- Questions ----------------
 
     private fun renderQuestion() {
         val question = currentQuestion()
@@ -195,318 +258,28 @@ internal class SurveyActivity : AppCompatActivity() {
             return
         }
         content.removeAllViews()
-        validationText = null
+        noticeView = null
         renderProgress()
-        backButton.visibility = if (canGoBack()) View.VISIBLE else View.INVISIBLE
-
-        question.imageUrl?.takeIf { it.isNotBlank() }?.let { url ->
-            content.addView(ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                contentDescription = null
-                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-                load(url) { crossfade(true) }
-            }, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(220),
-            ).apply { bottomMargin = dp(24) })
-        }
-        content.addView(TextView(this).apply {
-            text = question.title
-            textSize = 24f
-            setTextColor(textColor())
-            typeface = resolvedTypeface(Typeface.BOLD)
-        })
-        question.subtitle?.takeIf { it.isNotBlank() }?.let { subtitle ->
-            content.addView(TextView(this).apply {
-                text = subtitle
-                textSize = 15f
-                setTextColor(subtextColor())
-                typeface = resolvedTypeface(Typeface.NORMAL)
-            }, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) })
-        }
-        content.addView(buildInput(question), LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply { topMargin = dp(24) })
-        nextButton.visibility = if (autoAdvances(question.type)) View.GONE else View.VISIBLE
-        nextButton.text = if (question.type == "info_screen") "Continue" else "Next"
-        setInlineNextEnabled(
-            question.type != "short_text" && question.type != "long_text" ||
-                SurveyFlowEvaluator.isAnswered(answers[question.id]),
-        )
-        content.addView(nextButton, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            topMargin = dp(20)
-            bottomMargin = dp(20)
-        })
-    }
-
-    private fun buildInput(question: SdkSurveyQuestion): View = when (question.type) {
-        "single_choice" -> choiceGroup(question, question.options, 0)
-        "rating" -> ratingInput(question)
-        "nps" -> choiceGroup(
-            question,
-            (0..10).map { SdkSurveyChoice(it.toString(), it.toString()) },
-            2,
-        )
-        "likert" -> choiceGroup(
-            question,
-            (question.labels.ifEmpty {
-                listOf("Strongly disagree", "Disagree", "Neutral", "Agree", "Strongly agree")
-            }).mapIndexed { index, label -> SdkSurveyChoice((index + 1).toString(), label) },
-            2,
-        )
-        "multi_choice" -> multiChoice(question)
-        "short_text", "long_text" -> textInput(question)
-        "ranking" -> rankingInput(question)
-        "single_date" -> dateInput(question)
-        "info_screen" -> TextView(this).apply {
-            text = question.body.orEmpty()
-            textSize = 16f
-            setTextColor(subtextColor())
-        }
-        else -> TextView(this).apply {
-            text = "Unsupported question type: ${question.type}"
-            setTextColor(textColor())
-        }
-    }
-
-    private fun ratingInput(question: SdkSurveyQuestion): View {
-        val initialValue = (answers[question.id] as? JsonPrimitive)
-            ?.content
-            ?.toIntOrNull()
-        return RatingQuestionView(
+        val inputs = SurveyInputs(
             context = this,
-            question = question.toPromptRatingQuestion(),
             theme = resolvedTheme,
-            initialValue = initialValue,
-        ).apply {
-            onValueChange = { answer ->
-                if (answer is PromptAnswerValue.Number) {
-                    answers[question.id] = JsonPrimitive(answer.value.toInt())
-                    scheduleSave()
-                    handler.postDelayed({
-                        if (currentQuestionId == question.id) advance()
-                    }, RATING_ADVANCE_DELAY_MS)
+            palette = palette,
+            answers = answers,
+            onChange = { scheduleSave() },
+            onAutoAdvance = { id, delayed ->
+                if (autoAdvances(question.type)) {
+                    val step = Runnable { if (currentQuestionId == id) advance() }
+                    if (delayed) handler.postDelayed(step, RATING_ADVANCE_DELAY_MS) else root.post(step)
                 }
-            }
-        }.view
-    }
-
-    private fun choiceGroup(
-        question: SdkSurveyQuestion,
-        choices: List<SdkSurveyChoice>,
-        numericMode: Int,
-    ): View {
-        val current = answers[question.id]
-        return RadioGroup(this).apply {
-            orientation = if (numericMode == 1) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-            choices.forEach { choice ->
-                addView(RadioButton(this@SurveyActivity).apply {
-                    text = choice.label
-                    minHeight = dp(48)
-                    isChecked = if (numericMode > 0) {
-                        (current as? JsonPrimitive)?.content == choice.id
-                    } else {
-                        (current as? JsonPrimitive)?.content == choice.id
-                    }
-                    buttonTintList = ColorStateList.valueOf(primaryColor())
-                    setTextColor(textColor())
-                    setOnClickListener {
-                        answers[question.id] = if (numericMode > 0) {
-                            JsonPrimitive(choice.id.toInt())
-                        } else {
-                            JsonPrimitive(choice.id)
-                        }
-                        scheduleSave()
-                        if (autoAdvances(question.type)) {
-                            root.post {
-                                if (currentQuestionId == question.id) advance()
-                            }
-                        }
-                    }
-                })
-            }
-        }
-    }
-
-    private fun multiChoice(question: SdkSurveyQuestion): View {
-        val selected = ((answers[question.id] as? JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.content }
-            ?: emptyList()).toMutableSet()
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            question.options.forEach { choice ->
-                addView(CheckBox(this@SurveyActivity).apply {
-                    text = choice.label
-                    minHeight = dp(48)
-                    isChecked = selected.contains(choice.id)
-                    buttonTintList = ColorStateList.valueOf(primaryColor())
-                    setTextColor(textColor())
-                    setOnCheckedChangeListener { _, checked ->
-                        if (checked && question.maxSelections != null &&
-                            selected.size >= question.maxSelections
-                        ) {
-                            isChecked = false
-                            return@setOnCheckedChangeListener
-                        }
-                        if (checked) selected += choice.id else selected -= choice.id
-                        answers[question.id] = JsonArray(selected.map(::JsonPrimitive))
-                        scheduleSave()
-                    }
-                })
-            }
-        }
-    }
-
-    private fun textInput(question: SdkSurveyQuestion): View {
-        val saved = (answers[question.id] as? JsonPrimitive)?.content.orEmpty()
-        val counter = question.maxLength
-            ?.takeIf { question.type == "long_text" && it > 0 }
-            ?.let { limit ->
-                TextView(this).apply {
-                    text = "${saved.length} / $limit"
-                    textSize = 12f
-                    gravity = Gravity.END
-                    setTextColor(subtextColor())
-                    typeface = resolvedTypeface(Typeface.NORMAL)
-                }
-            }
-        val edit = TextInputEditText(this).apply {
-            hint = question.placeholder
-            question.maxLength?.let { filters = arrayOf(android.text.InputFilter.LengthFilter(it)) }
-            setText(saved)
-            addTextChangedListener(object : TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    val value = s?.toString().orEmpty()
-                    answers[question.id] = JsonPrimitive(value)
-                    question.maxLength?.let { counter?.text = "${value.length} / $it" }
-                    if (currentQuestionId == question.id) {
-                        setInlineNextEnabled(value.trim().isNotEmpty())
-                    }
-                    scheduleSave()
-                }
-                override fun afterTextChanged(s: Editable?) = Unit
-            })
-        }
-        val field = TextInputLayout(this).apply {
-            addView(edit)
-            styleTextAnswer(
-                layout = this,
-                input = edit,
-                theme = resolvedTheme,
-                minimumHeightDp = if (question.type == "long_text") 120 else 100,
-                minimumLines = if (question.type == "long_text") 5 else 4,
-                maximumLines = if (question.type == "long_text") 8 else 6,
-                maxLength = question.maxLength,
-            )
-        }
-        if (counter == null) return field
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(field, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ))
-            addView(counter, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(4) })
-        }
-    }
-
-    private fun rankingInput(question: SdkSurveyQuestion): View {
-        val saved = (answers[question.id] as? JsonArray)
-            ?.mapNotNull { (it as? JsonPrimitive)?.content }
-            .orEmpty()
-        val byId = question.items.associateBy { it.id }
-        ranking = if (saved.isEmpty()) {
-            question.items.toMutableList()
-        } else {
-            saved.mapNotNull(byId::get).toMutableList()
-        }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            renderRankingRows(this, question)
-        }
-    }
-
-    private fun renderRankingRows(container: LinearLayout, question: SdkSurveyQuestion) {
-        container.removeAllViews()
-        ranking.forEachIndexed { index, item ->
-            container.addView(LinearLayout(this).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(4), 0, dp(4))
-                addView(TextView(this@SurveyActivity).apply {
-                    text = "${index + 1}. ${item.label}"
-                    setTextColor(textColor())
-                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-                addView(MaterialButton(this@SurveyActivity).apply {
-                    text = "Move up"
-                    isEnabled = index > 0
-                    setOnClickListener {
-                        ranking.add(index - 1, ranking.removeAt(index))
-                        saveRanking(question)
-                        renderRankingRows(container, question)
-                    }
-                })
-                addView(MaterialButton(this@SurveyActivity).apply {
-                    text = "Move down"
-                    isEnabled = index < ranking.lastIndex
-                    setOnClickListener {
-                        ranking.add(index + 1, ranking.removeAt(index))
-                        saveRanking(question)
-                        renderRankingRows(container, question)
-                    }
-                })
-            })
-        }
-        saveRanking(question)
-    }
-
-    private fun saveRanking(question: SdkSurveyQuestion) {
-        answers[question.id] = JsonArray(ranking.map { JsonPrimitive(it.id) })
-        scheduleSave()
-    }
-
-    private fun dateInput(question: SdkSurveyQuestion): View = MaterialButton(this).apply {
-        text = (answers[question.id] as? JsonPrimitive)?.content ?: "Choose a date"
-        minHeight = dp(48)
-        setOnClickListener {
-            val now = DateTime.parseLocalDate(
-                (answers[question.id] as? JsonPrimitive)?.content,
-            ) ?: DateTime.todayLocalDate()
-            val dialog = DatePickerDialog(
-                this@SurveyActivity,
-                { _, year, month, day ->
-                    val selected = DateTime.localDate(year, month, day)?.iso ?: return@DatePickerDialog
-                    answers[question.id] = JsonPrimitive(selected)
-                    text = selected
-                    scheduleSave()
-                },
-                now.year,
-                now.month - 1,
-                now.day,
-            )
-            question.minDate?.let { raw ->
-                DateTime.parseLocalDate(raw)?.let { min ->
-                    dialog.datePicker.minDate = min.utcStartMillis()
-                }
-            }
-            question.maxDate?.let { raw ->
-                DateTime.parseLocalDate(raw)?.let { max ->
-                    dialog.datePicker.maxDate = max.utcStartMillis()
-                }
-            }
-            dialog.show()
-        }
+            },
+        )
+        content.addView(inputs.build(question), matchWidth())
+        placeActions()
+        scroll.scrollTo(0, 0)
+        content.alpha = 0f
+        content.translationX = dpPx(36).toFloat()
+        content.animate().alpha(1f).translationX(0f).setDuration(240)
+            .setInterpolator(android.view.animation.DecelerateInterpolator(1.5f)).start()
     }
 
     private fun advance() {
@@ -515,13 +288,13 @@ internal class SurveyActivity : AppCompatActivity() {
         if (question.type == "info_screen") answers[question.id] = JsonPrimitive("")
         val answer = answers[question.id]
         if (question.required && !SurveyFlowEvaluator.isAnswered(answer)) {
-            showValidation("Please answer this question to continue.")
+            showNotice("Please answer this question to continue.")
             return
         }
         if (question.type == "multi_choice") {
-            val count = (answer as? JsonArray)?.size ?: 0
+            val count = (answer as? kotlinx.serialization.json.JsonArray)?.size ?: 0
             if (question.minSelections != null && count < question.minSelections) {
-                showValidation("Select at least ${question.minSelections} options.")
+                showNotice("Select at least ${question.minSelections} options.")
                 return
             }
         }
@@ -542,8 +315,8 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun completeSurvey() {
         submitting = true
-        nextButton.isEnabled = false
-        nextButton.text = "Submitting…"
+        clearNotice()
+        placeActions()
         presentation.onComplete(
             presentation.attempt.attemptId,
             answers.toMap(),
@@ -551,9 +324,13 @@ internal class SurveyActivity : AppCompatActivity() {
             runOnUiThread {
                 submitting = false
                 if (!delivered) {
-                    nextButton.isEnabled = true
-                    nextButton.text = "Retry"
-                    showValidation("Your answers are saved on this device. Reconnect and retry to finish.")
+                    placeActions()
+                    showNotice(
+                        "Your answers are saved on this device. Reconnect and try again to finish.",
+                        SurfaceButton(this, palette, "Try again", secondary = true, compact = true).apply {
+                            setOnAction { advance() }
+                        },
+                    )
                     return@runOnUiThread
                 }
                 ended = true
@@ -564,42 +341,44 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun renderEndScreen() {
         val end = presentation.survey.endScreen ?: presentation.survey.flow.endScreen
-        header.visibility = View.VISIBLE
-        backButton.visibility = View.INVISIBLE
-        progressSlot.removeAllViews()
+        header.setCenter(null)
         content.removeAllViews()
+        noticeView = null
         content.gravity = Gravity.CENTER_HORIZONTAL
-        content.addView(TextView(this).apply {
-            text = end?.headline ?: "Thanks for your feedback"
-            textSize = 24f
-            gravity = Gravity.CENTER
-            typeface = resolvedTypeface(Typeface.BOLD)
-            setTextColor(textColor())
-        })
-        end?.body?.let { body ->
-            content.addView(TextView(this).apply {
-                text = body
-                textSize = 16f
-                gravity = Gravity.CENTER
-                setTextColor(subtextColor())
-            }, LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) })
+        content.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, dpPx(24), 0, dpPx(24))
+            addView(FrameLayout(this@SurveyActivity).apply {
+                background = oval(palette.tint)
+                addView(GlyphView(this@SurveyActivity, Glyph.TICK, palette.primary),
+                    FrameLayout.LayoutParams(dpPx(36), dpPx(36), Gravity.CENTER))
+            }, LinearLayout.LayoutParams(dpPx(72), dpPx(72)).apply { bottomMargin = dpPx(20) })
+            addView(surfaceText(palette, end?.headline ?: "Thanks!", 24f, palette.text, 700, 30f, Gravity.CENTER).apply {
+                letterSpacing = -0.012f
+                accessibilityHeading()
+            }, matchWidth())
+            end?.body?.takeIf { it.isNotBlank() }?.let { text ->
+                addView(MeasureLayout(this@SurveyActivity, dpPx(420)).apply {
+                    addView(surfaceText(palette, text, 16f, palette.subtext, 400, 24f, Gravity.CENTER), matchWidth())
+                }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                    topMargin = dpPx(10)
+                    gravity = Gravity.CENTER_HORIZONTAL
+                })
+            }
+        }, matchWidth())
+        body.gravity = Gravity.CENTER_VERTICAL
+        placeActions()
+    }
+
+    private fun endAction(): SurfaceButton {
+        val end = presentation.survey.endScreen ?: presentation.survey.flow.endScreen
+        return SurfaceButton(this, palette, end?.cta?.label ?: "Done").apply {
+            setOnAction {
+                end?.cta?.let(::openEndCta)
+                finish()
+            }
         }
-        nextButton.isEnabled = true
-        nextButton.text = end?.cta?.label ?: "Close"
-        nextButton.setOnClickListener {
-            end?.cta?.let(::openEndCta)
-            finish()
-        }
-        content.addView(nextButton, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            topMargin = dp(32)
-            bottomMargin = dp(20)
-        })
     }
 
     private fun openEndCta(cta: SdkSurveyEndCta) {
@@ -619,7 +398,7 @@ internal class SurveyActivity : AppCompatActivity() {
                         if (persisted) {
                             finish()
                         } else {
-                            showValidation("Unable to save your progress. Please try again.")
+                            showNotice("Your progress wasn't saved. Try leaving again.")
                         }
                     }
                 }
@@ -639,15 +418,11 @@ internal class SurveyActivity : AppCompatActivity() {
     private fun autoAdvances(type: String): Boolean =
         type == "single_choice" || type == "rating" || type == "nps" || type == "likert"
 
-    private fun setInlineNextEnabled(enabled: Boolean) {
-        nextButton.isEnabled = enabled
-        nextButton.alpha = if (enabled) 1f else 0.4f
-    }
-
     private fun currentQuestion(): SdkSurveyQuestion? = presentation.survey.flow.questions
         .firstOrNull { it.id == currentQuestionId }
 
     private fun scheduleSave() {
+        if (!ended) refreshNext()
         handler.removeCallbacksAndMessages(SAVE_TOKEN)
         handler.postAtTime(
             {
@@ -663,61 +438,57 @@ internal class SurveyActivity : AppCompatActivity() {
     }
 
     private fun renderProgress() {
-        progressSlot.removeAllViews()
         val flow = presentation.survey.flow
-        if (flow.progressStyle == "none") return
-        val index = flow.questions.indexOfFirst { it.id == currentQuestionId }.coerceAtLeast(0)
-        if (flow.progressStyle == "dots") {
-            val dots = LinearLayout(this).apply {
-                gravity = Gravity.CENTER
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(10), 0, dp(10))
-            }
-            flow.questions.indices.forEach { dot ->
-                dots.addView(View(this).apply {
-                    background = android.graphics.drawable.GradientDrawable().apply {
-                        shape = android.graphics.drawable.GradientDrawable.OVAL
-                        setColor(if (dot <= index) primaryColor() else borderColor())
-                    }
-                }, LinearLayout.LayoutParams(dp(8), dp(8)).apply {
-                    if (dot > 0) marginStart = dp(6)
-                })
-            }
-            progressSlot.addView(dots)
-        } else {
-            progressSlot.addView(ProgressBar(
-                this,
-                null,
-                android.R.attr.progressBarStyleHorizontal,
-            ).apply {
-                max = flow.questions.size.coerceAtLeast(1)
-                progress = index + 1
-                progressTintList = ColorStateList.valueOf(primaryColor())
-                progressBackgroundTintList = ColorStateList.valueOf(borderColor())
-            }, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(4),
-            ))
-        }
-    }
-
-    private fun showValidation(message: String) {
-        validationText?.let {
-            it.text = message
-            it.announceForAccessibility(message)
+        if (flow.progressStyle == "none") {
+            header.setCenter(null)
             return
         }
-        validationText = TextView(this).apply {
-            text = message
-            setTextColor(resolveColor(com.google.android.material.R.attr.colorError, Color.RED))
-            announceForAccessibility(message)
+        val index = flow.questions.indexOfFirst { it.id == currentQuestionId }.coerceAtLeast(0)
+        if (flow.progressStyle == "dots") {
+            header.setCenter(LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+                contentDescription = "Question ${index + 1} of ${flow.questions.size}"
+                flow.questions.indices.forEach { dot ->
+                    addView(View(this@SurveyActivity).apply {
+                        background = roundRect(if (dot <= index) palette.primary else palette.fillStrong, dpPx(3).toFloat())
+                    }, LinearLayout.LayoutParams(dpPx(if (dot == index) 18 else 6), dpPx(6)).apply {
+                        if (dot > 0) marginStart = dpPx(6)
+                    })
+                }
+            })
+            return
         }
-        val insertionIndex = content.indexOfChild(nextButton).takeIf { it >= 0 }
-            ?: content.childCount
-        content.addView(validationText, insertionIndex, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply { topMargin = dp(12) })
+        val fraction = SurveyProgress.fraction(flow.questions.size, index)
+        val track = MeasureLayout(this, dpPx(320)).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = roundRect(palette.fillStrong, dpPx(3).toFloat())
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "Question ${index + 1} of ${flow.questions.size}"
+            addView(View(this@SurveyActivity).apply {
+                background = roundRect(palette.primary, dpPx(3).toFloat())
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, fraction))
+            addView(View(this@SurveyActivity), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f - fraction))
+        }
+        header.setCenter(FrameLayout(this).apply {
+            setPadding(dpPx(8), 0, dpPx(8), 0)
+            addView(track, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dpPx(6), Gravity.CENTER))
+        }, fill = true)
+    }
+
+    private fun showNotice(message: String, action: View? = null) {
+        clearNotice()
+        val notice = surveyNotice(palette, message, action)
+        noticeView = notice
+        content.addView(notice, matchWidth().apply { topMargin = dpPx(20) })
+        notice.announceForAccessibility(message)
+        scroll.post { scroll.smoothScrollTo(0, notice.bottom) }
+    }
+
+    private fun clearNotice() {
+        noticeView?.let { content.removeView(it) }
+        noticeView = null
     }
 
     private fun restoreState(savedInstanceState: Bundle?) {
@@ -742,42 +513,13 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun renderError(message: String) {
         content.removeAllViews()
-        content.addView(TextView(this).apply {
-            text = message
-            setTextColor(textColor())
-        })
-        nextButton.visibility = View.GONE
+        content.addView(surfaceText(palette, message, 16f, palette.text, 400, 24f), matchWidth())
+        nextButton = null
+        header.setLeading(closeButton)
+        header.setTrailing()
+        footerColumn.removeAllViews()
+        footer.visibility = View.GONE
     }
-
-    private fun resolveColor(attr: Int, fallback: Int): Int {
-        val typed = android.util.TypedValue()
-        return if (this@SurveyActivity.theme.resolveAttribute(attr, typed, true)) {
-            typed.data
-        } else {
-            fallback
-        }
-    }
-
-    private fun primaryColor(): Int = resolvedTheme.primary
-        ?: resolveColor(com.google.android.material.R.attr.colorPrimary, Color.BLACK)
-
-    private fun textColor(): Int = resolvedTheme.text
-        ?: resolveColor(com.google.android.material.R.attr.colorOnSurface, Color.BLACK)
-
-    private fun subtextColor(): Int = resolvedTheme.subtext
-        ?: resolveColor(com.google.android.material.R.attr.colorOnSurfaceVariant, Color.DKGRAY)
-
-    private fun borderColor(): Int = resolvedTheme.border
-        ?: resolveColor(com.google.android.material.R.attr.colorOutlineVariant, Color.LTGRAY)
-
-    private fun resolvedTypeface(style: Int): Typeface =
-        resolvedTheme.fontFamily?.let { Typeface.create(it, style) }
-            ?: Typeface.create(Typeface.DEFAULT, style)
-
-    private fun contrastOn(color: Int): Int =
-        if (ColorUtils.calculateLuminance(color) < 0.45) Color.WHITE else Color.BLACK
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
         private const val RATING_ADVANCE_DELAY_MS = 220L
@@ -786,5 +528,13 @@ internal class SurveyActivity : AppCompatActivity() {
         private const val STATE_HISTORY = "usergist.survey.history"
         private const val STATE_QUESTION_ID = "usergist.survey.questionId"
         private const val STATE_ENDED = "usergist.survey.ended"
+    }
+}
+
+/** Progress fraction for the bar: position of the current step (min one step shown). */
+internal object SurveyProgress {
+    fun fraction(total: Int, index: Int): Float {
+        if (total <= 0) return 0f
+        return ((index + 1).toFloat() / total.toFloat()).coerceIn(0f, 1f)
     }
 }

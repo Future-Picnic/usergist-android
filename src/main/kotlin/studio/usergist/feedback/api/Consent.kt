@@ -3,10 +3,9 @@ package studio.usergist.feedback.api
 /**
  * User consent flags for SDK data purposes (GDPR-aligned).
  *
- * The SDK hard-blocks all network transport until the [feedback] purpose
- * is granted. Callers can still invoke `track` / `identify` before
- * consent — those events are queued locally and released once consent is
- * set, or dropped on [studio.usergist.feedback.UserGist.reset].
+ * Each purpose independently gates collection. Denied analytics are dropped;
+ * feedback mutations require [feedback]. Control-plane calls can still
+ * synchronize anonymous session and consent state.
  */
 data class Consent(
     /** Permission to use data for product analytics. */

@@ -69,6 +69,7 @@ internal class PromptPresenter(
             return false
         }
         val fm = activity.supportFragmentManager
+        SdkModalCoordinator.observeDismissals(fm)
         if (fm.isStateSaved || fm.isDestroyed) {
             UserGistLogger.d("PromptPresenter: fragment manager not ready; retaining prompt")
             return false

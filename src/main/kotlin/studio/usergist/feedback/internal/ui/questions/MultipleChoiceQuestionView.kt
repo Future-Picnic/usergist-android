@@ -1,72 +1,45 @@
 package studio.usergist.feedback.internal.ui.questions
 
 import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
-import android.view.Gravity
-import android.view.LayoutInflater
 import android.view.View
-import android.widget.FrameLayout
 import android.widget.LinearLayout
-import com.google.android.material.button.MaterialButton
-import studio.usergist.feedback.R
 import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.model.Question
 import studio.usergist.feedback.internal.ui.ResolvedTheme
+import studio.usergist.feedback.internal.ui.surface.ChoiceRow
+import studio.usergist.feedback.internal.ui.surface.SurfacePalette
+import studio.usergist.feedback.internal.ui.surface.dpPx
+import studio.usergist.feedback.internal.ui.surface.matchWidth
+import studio.usergist.feedback.internal.ui.surface.questionHeader
 
 /**
- * Renders the React Native full-width stacked option rows.
+ * Stacked choice rows (port of RN questions/MultipleChoiceQuestion.tsx):
+ * tint + primary border + radio/checkbox indicator for the selection.
  */
 internal class MultipleChoiceQuestionView(
     context: Context,
     private val question: Question.MultipleChoice,
-    private val theme: ResolvedTheme,
+    theme: ResolvedTheme,
 ) : QuestionView {
 
     override var onValueChange: ((PromptAnswerValue) -> Unit)? = null
 
-    override val view: View = LayoutInflater.from(context)
-        .inflate(R.layout.usergist_question_multiple_choice, FrameLayout(context), false)
-
-    private val stack: LinearLayout = view as LinearLayout
-    private val buttons = mutableListOf<MaterialButton>()
+    private val palette = SurfacePalette.from(theme)
+    private val rows = mutableListOf<Pair<String, ChoiceRow>>()
     private val selectedIds = mutableListOf<String>()
+    private val root = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+    override val view: View = root
 
     init {
+        val subtitle = question.subtitle ?: if (question.multiSelect) "Choose all that apply" else null
+        root.addView(context.questionHeader(palette, question.title, subtitle, question.imageUrl), matchWidth())
         question.options.forEachIndexed { index, option ->
-            val button = MaterialButton(
-                context,
-                null,
-                com.google.android.material.R.attr.materialButtonOutlinedStyle,
-            ).apply {
-                text = option.label
-                isCheckable = true
-                tag = option.id
-                isAllCaps = false
-                gravity = Gravity.START or Gravity.CENTER_VERTICAL
-                textAlignment = View.TEXT_ALIGNMENT_VIEW_START
-                typeface = Typeface.create(theme.fontFamily, Typeface.BOLD)
-                minimumHeight = dp(context, 48)
-                minHeight = dp(context, 48)
-                insetTop = 0
-                insetBottom = 0
-                cornerRadius = dp(context, 14)
-                strokeWidth = dp(context, 1)
-                setPadding(dp(context, 14), 0, dp(context, 14), 0)
-                contentDescription = option.label
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                ).apply {
-                    if (index < question.options.lastIndex) bottomMargin = dp(context, 8)
-                }
+            val row = ChoiceRow(context, palette, option.label, checkbox = question.multiSelect).apply {
                 setOnClickListener { toggle(option.id) }
             }
-            buttons += button
-            stack.addView(button)
+            rows += option.id to row
+            root.addView(row, matchWidth().apply { if (index > 0) topMargin = context.dpPx(8) })
         }
-        refreshStyles()
     }
 
     override fun currentAnswer(): PromptAnswerValue {
@@ -74,9 +47,7 @@ internal class MultipleChoiceQuestionView(
         return PromptAnswerValue.Choices(selectedIds.toList())
     }
 
-    override fun isSubmittable(): Boolean {
-        return selectedIds.isNotEmpty()
-    }
+    override fun isSubmittable(): Boolean = selectedIds.isNotEmpty()
 
     private fun toggle(id: String) {
         if (question.multiSelect) {
@@ -85,25 +56,7 @@ internal class MultipleChoiceQuestionView(
             selectedIds.clear()
             selectedIds.add(id)
         }
-        refreshStyles()
+        rows.forEach { (optionId, row) -> row.selectedState = selectedIds.contains(optionId) }
         onValueChange?.invoke(currentAnswer())
     }
-
-    private fun refreshStyles() {
-        val primary = theme.primary ?: Color.rgb(17, 17, 17)
-        val background = theme.background ?: Color.WHITE
-        val text = theme.text ?: Color.rgb(11, 11, 11)
-        val border = theme.border ?: Color.rgb(229, 229, 229)
-        buttons.forEach { button ->
-            val selected = selectedIds.contains(button.tag as String)
-            button.isChecked = selected
-            button.isSelected = selected
-            button.backgroundTintList = ColorStateList.valueOf(if (selected) primary else Color.TRANSPARENT)
-            button.strokeColor = ColorStateList.valueOf(if (selected) primary else border)
-            button.setTextColor(if (selected) background else text)
-        }
-    }
-
-    private fun dp(context: Context, value: Int): Int =
-        (value * context.resources.displayMetrics.density).toInt()
 }

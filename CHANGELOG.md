@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 — release QA and surface design
+
+- Refresh themed feedback, surveys, in-app messages and requests, including keyboard-safe fields and centered NPS scales.
+- Prevent duplicate app-open and message-shown events; improve modal handoff and frequency limits.
+- Correct native JSON notification actions, requests consent checks, push revocation and app-version reporting.
+
 ## 0.2.0 — aligned SDK release train
 
 - Align the Maven artifact and runtime version with the platform SDKs at 0.2.0. The APIs and durable instruction receipt protection from 0.1.6 are unchanged.

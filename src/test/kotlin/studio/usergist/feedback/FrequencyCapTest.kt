@@ -91,4 +91,29 @@ class FrequencyCapTest {
         val reborn = FrequencyCapStore(storage, json, nowMs = { now })
         assertFalse(reborn.allows("p1", caps))
     }
+
+    @Test
+    fun exact_expiry_uses_the_longest_applicable_tier_after_reload() {
+        val start = now
+        val day = 86_400_000L
+        val caps = FrequencyCaps(perPromptDays = 7, perUserDays = 3)
+        val store = FrequencyCapStore(storage, json, nowMs = { now })
+        store.recordShown("p1")
+        now = start + day
+        store.recordShown("p2")
+        val restored = FrequencyCapStore(storage, json, nowMs = { now })
+
+        now = start + 4 * day - 1
+        assertFalse(restored.allows("p3", caps))
+        now += 1
+        assertTrue(restored.allows("p3", caps))
+        assertFalse(restored.allows("p1", caps))
+        assertTrue(restored.allows("p1", FrequencyCaps(perPromptDays = 0, perUserDays = 0)))
+        now = start + 7 * day - 1
+        assertFalse(restored.allows("p1", caps))
+        now += 1
+        assertTrue(restored.allows("p1", caps))
+        now += 1
+        assertTrue(restored.allows("p1", caps))
+    }
 }
