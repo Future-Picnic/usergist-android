@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="usergist_submit">Submit</string>
+    <string name="usergist_dismiss">Dismiss</string>
+    <string name="usergist_nps_followup_hint">Tell us a bit more (optional)</string>
+    <string name="usergist_nps_low_label">Not at all likely</string>
+    <string name="usergist_nps_high_label">Extremely likely</string>
+    <string name="usergist_close">Close</string>
+    <string name="usergist_next">Next</string>
+</resources>
