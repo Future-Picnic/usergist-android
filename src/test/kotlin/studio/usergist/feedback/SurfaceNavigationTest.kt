@@ -11,6 +11,20 @@ import studio.usergist.feedback.internal.ui.surface.SurfaceNavigation
 class SurfaceNavigationTest {
 
     @Test
+    fun landscapeKeepsCloseAndThePrimaryInOneHeaderRow() {
+        listOf(true, false).forEach { back ->
+            val nav = SurfaceNavigation.resolve(back, hasMainAction = true, landscape = true)
+            assertEquals(HeaderControl.CLOSE, nav.leading)
+            assertEquals(HeaderControl.NONE, nav.trailing)
+            assertTrue(nav.headerAction)
+            assertFalse(nav.footerAction)
+        }
+        val autoAdvance = SurfaceNavigation.resolve(true, hasMainAction = false, landscape = true)
+        assertFalse(autoAdvance.headerAction)
+        assertFalse(autoAdvance.footerAction)
+    }
+
+    @Test
     fun withBackBackLeadsAndCloseTrails() {
         val nav = SurfaceNavigation.resolve(canGoBack = true, hasMainAction = true)
         assertEquals(HeaderControl.BACK, nav.leading)

@@ -66,6 +66,8 @@ internal class SurveyActivity : AppCompatActivity() {
     private lateinit var content: LinearLayout
     private lateinit var footer: FrameLayout
     private lateinit var footerColumn: MeasureLayout
+    private lateinit var headerColumn: MeasureLayout
+    private lateinit var headerFrame: FrameLayout
     private lateinit var closeButton: View
     private var nextButton: SurfaceButton? = null
     private var noticeView: View? = null
@@ -157,10 +159,15 @@ internal class SurveyActivity : AppCompatActivity() {
             if (ended) finish() else confirmAbandon()
         }
         header.setLeading(closeButton)
-        root.addView(FrameLayout(this).apply {
+        headerColumn = MeasureLayout(this, 0).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header.view, matchWidth())
+        }
+        headerFrame = FrameLayout(this).apply {
             setPadding(dpPx(12), dpPx(if (isLandscape()) 8 else 4), dpPx(12), dpPx(4))
-            addView(header.view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }, matchWidth())
+            addView(headerColumn, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL))
+        }
+        root.addView(headerFrame, matchWidth())
 
         scroll = ScrollView(this).apply {
             isFillViewport = true
@@ -196,11 +203,11 @@ internal class SurveyActivity : AppCompatActivity() {
     }
 
     /**
-     * Same in both orientations: Back leading + Close trailing when Back is
-     * usable, else Close leading. The main action is one full-width footer
-     * button; Back never sits in the footer.
+     * Landscape shares one aligned header row; portrait retains its footer.
      */
     private fun placeActions() {
+        val landscape = isLandscape()
+        val back = canGoBack() && !ended && !submitting
         val question = currentQuestion()
         val main: SurfaceButton? = when {
             ended -> endAction()
@@ -211,10 +218,23 @@ internal class SurveyActivity : AppCompatActivity() {
         val nav = SurfaceNavigation.resolve(
             canGoBack = canGoBack() && !ended && !submitting,
             hasMainAction = main != null,
+            landscape = landscape,
         )
-        header.setLeading(headerControl(nav.leading))
-        header.setTrailing(headerControl(nav.trailing))
         footerColumn.removeAllViews()
+        header.balancedSides = landscape
+        headerColumn.maxWidthPx = if (landscape) dpPx(CONTENT_MAX_WIDTH_DP) else 0
+        headerColumn.requestLayout()
+        headerFrame.setPadding(dpPx(if (landscape) 24 else 12), dpPx(if (landscape) 8 else 4), dpPx(if (landscape) 24 else 12), dpPx(4))
+        closeButton = surfaceClose(palette, getString(R.string.usergist_close), regular = landscape) {
+            if (ended) finish() else confirmAbandon()
+        }
+        if (landscape) {
+            header.setLeading(closeButton, if (back) surfaceBack(palette, regular = true) { goBack() } else null)
+            header.setTrailing(if (nav.headerAction) main else null)
+        } else {
+            header.setLeading(headerControl(nav.leading))
+            header.setTrailing(headerControl(nav.trailing))
+        }
         footer.visibility = if (nav.footerAction) View.VISIBLE else View.GONE
         if (nav.footerAction && main != null) footerColumn.addView(main.detach(), matchWidth())
     }
@@ -227,7 +247,7 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun buildNext(question: SdkSurveyQuestion): SurfaceButton {
         val final = SurveyFlowEvaluator.nextQuestionId(presentation.survey.flow, question.id, answers) == null
-        return SurfaceButton(this, palette, if (final) "Submit" else "Next").apply {
+        return SurfaceButton(this, palette, if (final) "Submit" else "Next", compact = isLandscape()).apply {
             loading = submitting
             setDisabled(nextDisabled(question))
             setOnAction { advance() }
@@ -373,7 +393,7 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun endAction(): SurfaceButton {
         val end = presentation.survey.endScreen ?: presentation.survey.flow.endScreen
-        return SurfaceButton(this, palette, end?.cta?.label ?: "Done").apply {
+        return SurfaceButton(this, palette, end?.cta?.label ?: "Done", compact = isLandscape()).apply {
             setOnAction {
                 end?.cta?.let(::openEndCta)
                 finish()

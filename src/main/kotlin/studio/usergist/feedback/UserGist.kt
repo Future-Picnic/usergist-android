@@ -2,6 +2,7 @@ package studio.usergist.feedback
 
 import android.app.Application
 import android.content.Context
+import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.Dispatchers
@@ -2033,6 +2034,19 @@ object UserGist {
                     payload,
                 ).jsonObject,
             )
+            // A response callback is not a server acknowledgement. Confirm only
+            // after durable storage succeeds, without promising online delivery.
+            if (!info.dismissed) {
+                val generation = resetGeneration.get()
+                launch(Dispatchers.Main) {
+                    if (resetGeneration.get() == generation && !resetInProgress.get() &&
+                        consentRef.get()?.get()?.feedback == true) {
+                        appContextRef.get()?.let { context ->
+                            Toast.makeText(context, R.string.usergist_feedback_saved, Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
             flushMutations()
         }
     }

@@ -77,6 +77,7 @@ internal fun Context.surfaceIconButton(
     palette: SurfacePalette,
     glyph: Glyph,
     label: String,
+    regular: Boolean = false,
     onClick: () -> Unit,
 ): View = PressFrame(this).apply {
     contentDescription = label
@@ -86,17 +87,20 @@ internal fun Context.surfaceIconButton(
     minimumWidth = dpPx(48)
     minimumHeight = dpPx(48)
     val face = FrameLayout(context).apply { background = oval(palette.iconFace) }
-    face.addView(GlyphView(context, glyph, palette.text), FrameLayout.LayoutParams(dpPx(32), dpPx(32)))
-    addView(face, FrameLayout.LayoutParams(dpPx(32), dpPx(32), Gravity.CENTER))
+    val faceSize = dpPx(if (regular) 48 else 32)
+    face.addView(GlyphView(context, glyph, palette.text).apply {
+        if (regular) { scaleX = 1.15f; scaleY = 1.15f }
+    }, FrameLayout.LayoutParams(faceSize, faceSize))
+    addView(face, FrameLayout.LayoutParams(faceSize, faceSize, Gravity.CENTER))
     setOnClickListener { onClick() }
     layoutParams = ViewGroup.LayoutParams(dpPx(48), dpPx(48))
 }
 
-internal fun Context.surfaceClose(palette: SurfacePalette, label: String = "Close", onClick: () -> Unit) =
-    surfaceIconButton(palette, Glyph.CLOSE, label, onClick)
+internal fun Context.surfaceClose(palette: SurfacePalette, label: String = "Close", regular: Boolean = false, onClick: () -> Unit) =
+    surfaceIconButton(palette, Glyph.CLOSE, label, regular, onClick)
 
-internal fun Context.surfaceBack(palette: SurfacePalette, label: String = "Back", onClick: () -> Unit) =
-    surfaceIconButton(palette, Glyph.BACK, label, onClick)
+internal fun Context.surfaceBack(palette: SurfacePalette, label: String = "Back", regular: Boolean = false, onClick: () -> Unit) =
+    surfaceIconButton(palette, Glyph.BACK, label, regular, onClick)
 
 /**
  * Main and secondary actions. Labels wrap instead of truncating; the fixed
@@ -191,6 +195,14 @@ internal class SurfaceButton(
  * within 320dp instead of squeezing the title.
  */
 internal class SurfaceHeader(context: Context) {
+    var balancedSides = false
+        set(value) {
+            field = value
+            val width = view.context.dpPx(if (value) 104 else 48)
+            leading.minimumWidth = width
+            trailing.minimumWidth = width
+            view.requestLayout()
+        }
     val view = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -233,7 +245,7 @@ internal class SurfaceHeader(context: Context) {
         children.forEachIndexed { index, child ->
             (child.parent as? ViewGroup)?.removeView(child)
             slot.addView(child, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                if (index > 0) marginStart = slot.context.dpPx(4)
+                if (index > 0) marginStart = slot.context.dpPx(if (balancedSides) 8 else 4)
             })
         }
     }

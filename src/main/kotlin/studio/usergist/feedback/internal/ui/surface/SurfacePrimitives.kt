@@ -211,6 +211,9 @@ internal class SurfaceField(
             } else {
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
             }
+            // Keep the SDK header and question visible instead of letting the
+            // IME replace the entire landscape app with an extracted editor.
+            imeOptions = imeOptions or android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
             if (multiline) {
                 isSingleLine = false
                 maxLines = 8

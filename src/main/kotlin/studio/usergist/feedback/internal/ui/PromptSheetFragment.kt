@@ -199,7 +199,13 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         })
         stepView = ctx.surfaceText(palette, null, 13f, palette.subtext, 600)
         header.setCenter(stepView)
-        sheet.addView(header.view, matchWidth())
+        val headerColumn = MeasureLayout(ctx, 0).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(header.view, matchWidth())
+        }
+        sheet.addView(headerColumn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
 
         // One centred readable column for the question and the portrait footer.
         val measure = MeasureLayout(ctx, ctx.dpPx(CONTENT_MAX_WIDTH_DP)).apply {
@@ -233,22 +239,34 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
         resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     /**
-     * Feedback has no Back: Close leads, the trailing slot stays empty, and
-     * Next/Submit is one full-width footer action in both orientations.
+     * Landscape moves the primary action into the aligned header; portrait
+     * retains the full-width footer.
      */
     private fun placeNextButton() {
         val ctx = context ?: return
         val prompt = clientPrompt ?: return
         val isLast = currentIndex >= prompt.questions.lastIndex
-        val button = SurfaceButton(ctx, palette, if (isLast) "Submit" else "Next").apply {
+        val landscape = isLandscape()
+        val button = SurfaceButton(ctx, palette, if (isLast) "Submit" else "Next", compact = landscape).apply {
             setDisabled(nextDisabled)
             setOnAction { advance() }
         }
         nextButton?.detach()
         nextButton = button
-        val nav = SurfaceNavigation.resolve(canGoBack = false, hasMainAction = nextVisible)
-        header.setTrailing()
+        val nav = SurfaceNavigation.resolve(canGoBack = false, hasMainAction = nextVisible, landscape = landscape)
         footer.removeAllViews()
+        (header.view.parent as? MeasureLayout)?.apply {
+            maxWidthPx = if (landscape) ctx.dpPx(CONTENT_MAX_WIDTH_DP) else 0
+            val inset = ctx.dpPx(if (landscape) 12 else 0)
+            setPadding(inset, 0, inset, 0)
+            requestLayout()
+        }
+        header.balancedSides = landscape
+        header.setLeading(ctx.surfaceClose(palette, getString(R.string.usergist_close), regular = landscape) {
+            deliverResponse(dismissed = true, answers = orderedAnswers())
+            dismissAllowingStateLoss()
+        })
+        header.setTrailing(if (nav.headerAction) button else null)
         footer.visibility = if (nav.footerAction) View.VISIBLE else View.GONE
         if (nav.footerAction) {
             footer.addView(button, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))

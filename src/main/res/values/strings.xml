@@ -7,4 +7,5 @@
     <string name="usergist_nps_high_label">Extremely likely</string>
     <string name="usergist_close">Close</string>
     <string name="usergist_next">Next</string>
+    <string name="usergist_feedback_saved">Feedback saved. We’ll send it automatically.</string>
 </resources>
