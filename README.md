@@ -12,7 +12,7 @@ feature requests, analytics events, and host-compatible FCM delivery.
 
 ```kotlin
 dependencies {
-    implementation("com.usergist:feedback:0.1.6")
+    implementation("com.usergist:feedback:0.2.0")
 }
 ```
 

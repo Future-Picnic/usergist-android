@@ -13,7 +13,7 @@ android {
     defaultConfig {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
-        buildConfigField("String", "SDK_VERSION", "\"0.1.6\"")
+        buildConfigField("String", "SDK_VERSION", "\"0.2.0\"")
     }
 
     compileOptions {
@@ -65,7 +65,7 @@ dependencies {
 }
 
 group = "com.usergist"
-version = "0.1.6"
+version = "0.2.0"
 
 publishing {
     repositories {
@@ -80,7 +80,7 @@ publishing {
             afterEvaluate { from(components["release"]) }
             groupId = "com.usergist"
             artifactId = "feedback"
-            version = "0.1.6"
+            version = "0.2.0"
             pom {
                 name.set("userGist Feedback SDK")
                 description.set("userGist mobile feedback SDK for Android")
