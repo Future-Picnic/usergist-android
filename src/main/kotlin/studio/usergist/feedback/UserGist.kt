@@ -1553,7 +1553,6 @@ object UserGist {
                 if (instruction.id <= 0) continue
                 handled += instruction.id
                 if (seen.contains(instruction.id)) continue
-                dispatchInstruction(instruction)
                 seen += instruction.id
                 while (seen.size > 200) seen.remove(seen.first())
                 val persisted = storage.writeText(
@@ -1564,6 +1563,8 @@ object UserGist {
                     ),
                 )
                 if (!persisted) error("Failed to persist instruction dedupe state")
+                // Fail before requesting UI if a receipt cannot be stored.
+                dispatchInstruction(instruction)
             }
             if (handled.isEmpty()) return@withLock
             val cursor = maxOf(stored.cursor, handled.max())

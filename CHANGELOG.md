@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 — durable instruction receipts
+
+- Save instruction delivery state before requesting display. A failed receipt write now leaves the message undisplayed and available for retry instead of allowing a repeated impression.
+- Maximum-impressions enforcement also requires the coordinated API update. Update the Maven dependency and rebuild the host app to receive this SDK protection.
+
 ## 0.1.4 — identity lifecycle
 
 - Preserve the zero-argument Java/JVM reset API. Serialize push registration/invalidation and retire invalidated tokens from durable automatic retries.
