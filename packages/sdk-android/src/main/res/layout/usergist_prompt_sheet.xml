@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.core.widget.NestedScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:fillViewport="true"
+    android:overScrollMode="never">
+
+    <LinearLayout
+        android:id="@+id/usergist_prompt_root"
+        android:orientation="vertical"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="280dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="30dp">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="32dp">
+
+            <View
+                android:id="@+id/usergist_handle"
+                android:layout_width="40dp"
+                android:layout_height="4dp"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="6dp"/>
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/usergist_close"
+                android:layout_width="32dp"
+                android:layout_height="32dp"
+                android:layout_gravity="top|end"
+                android:background="@android:color/transparent"
+                android:contentDescription="@string/usergist_close"
+                android:padding="8dp"
+                android:src="@drawable/usergist_ic_close"
+                app:tint="@color/usergist_on_surface"/>
+
+        </FrameLayout>
+
+        <Space
+            android:layout_width="match_parent"
+            android:layout_height="24dp"/>
+
+        <androidx.appcompat.widget.AppCompatImageView
+            android:id="@+id/usergist_question_image"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginBottom="16dp"
+            android:importantForAccessibility="no"
+            android:scaleType="centerCrop"
+            android:visibility="gone"/>
+
+        <TextView
+            android:id="@+id/usergist_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/UserGist.Text.Title"/>
+
+        <TextView
+            android:id="@+id/usergist_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:visibility="gone"
+            style="@style/UserGist.Text.Subtitle"/>
+
+        <FrameLayout
+            android:id="@+id/usergist_question_slot"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/usergist_next"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="20dp"
+            android:text="@string/usergist_next"
+            android:textAllCaps="false"
+            android:textSize="16sp"
+            android:visibility="gone"
+            style="@style/UserGist.Button.Primary"/>
+
+    </LinearLayout>
+
+</androidx.core.widget.NestedScrollView>
