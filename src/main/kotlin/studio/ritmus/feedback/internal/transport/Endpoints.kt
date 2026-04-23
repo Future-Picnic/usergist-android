@@ -12,4 +12,9 @@ internal object Endpoints {
     const val CONSENT: String = "$BASE/consent"
     const val IDENTIFY: String = "$BASE/identify"
     const val RESPONSES: String = "$BASE/responses"
+
+    // Push
+    const val PUSH_REGISTER_TOKEN: String = "$BASE/push/register-token"
+    const val PUSH_UPDATE_TOKEN: String = "$BASE/push/update-token"
+    const val PUSH_INVALIDATE_TOKEN: String = "$BASE/push/invalidate-token"
 }

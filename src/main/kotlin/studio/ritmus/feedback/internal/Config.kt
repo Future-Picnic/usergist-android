@@ -21,5 +21,7 @@ internal data class Config(
     companion object {
         internal const val SDK_PLATFORM: String = "android"
         internal const val SDK_VERSION_FALLBACK: String = "0.1.0"
+        /** Exposed to other packages (e.g. push) without needing a config instance. */
+        internal const val SDK_VERSION: String = SDK_VERSION_FALLBACK
     }
 }
