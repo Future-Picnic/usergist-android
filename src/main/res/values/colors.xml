@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ritmus_surface">#FFFFFF</color>
+    <color name="ritmus_on_surface">#111111</color>
+    <color name="ritmus_on_surface_subtle">#6B7280</color>
+    <color name="ritmus_primary">#111111</color>
+    <color name="ritmus_border">#E5E7EB</color>
+    <color name="ritmus_option_bg">#F5F5F5</color>
+    <color name="ritmus_option_selected_bg">#111111</color>
+    <color name="ritmus_option_selected_text">#FFFFFF</color>
+</resources>

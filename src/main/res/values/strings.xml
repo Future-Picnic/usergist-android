@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ritmus_submit">Submit</string>
+    <string name="ritmus_dismiss">Dismiss</string>
+    <string name="ritmus_nps_followup_hint">Tell us a bit more (optional)</string>
+    <string name="ritmus_nps_low_label">Not at all likely</string>
+    <string name="ritmus_nps_high_label">Extremely likely</string>
+</resources>
