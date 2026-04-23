@@ -10,12 +10,17 @@ import studio.ritmus.feedback.api.Consent
 internal data class ConsentRecord(
     val analytics: Boolean? = null,
     val feedback: Boolean? = null,
+    val push: Boolean? = null,
 ) {
-    fun toPublic(): Consent = Consent(analytics = analytics, feedback = feedback)
+    fun toPublic(): Consent = Consent(analytics = analytics, feedback = feedback, push = push)
 
     companion object {
         fun from(consent: Consent): ConsentRecord =
-            ConsentRecord(analytics = consent.analytics, feedback = consent.feedback)
+            ConsentRecord(
+                analytics = consent.analytics,
+                feedback = consent.feedback,
+                push = consent.push,
+            )
     }
 }
 

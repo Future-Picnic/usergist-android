@@ -250,6 +250,66 @@ object Ritmus {
         RitmusLogger.setDebug(enabled)
     }
 
+    // ---------------- Push ----------------
+
+    /** Internal: register an FCM token with the control plane. */
+    @JvmStatic
+    internal fun registerPushToken(token: String) {
+        if (!initialized.get()) return
+        val api = apiRef.get() ?: return
+        val consent = consentRef.get()?.get() ?: return
+        if (!consent.allowsPush) {
+            RitmusLogger.d("push register skipped: consent not granted")
+            return
+        }
+        val identity = identityRef.get()?.load() ?: return
+        val context = appContextRef.get()
+        val appVersion = try {
+            context?.packageManager?.getPackageInfo(context.packageName, 0)?.versionName
+        } catch (_: Throwable) {
+            null
+        }
+        scope.launch {
+            try {
+                val payload = SdkRegisterTokenPayload(
+                    anonymousId = identity.anonymousId,
+                    externalId = identity.externalId,
+                    token = token,
+                    platform = "android",
+                    environment = "production",
+                    language = java.util.Locale.getDefault().toLanguageTag(),
+                    timezone = java.util.TimeZone.getDefault().id,
+                    appVersion = appVersion,
+                    sdkVersion = Config.SDK_VERSION,
+                    optIn = true,
+                )
+                api.postJson(
+                    path = Endpoints.PUSH_REGISTER_TOKEN,
+                    body = payload,
+                    serializer = SdkRegisterTokenPayload.serializer(),
+                )
+            } catch (e: Throwable) {
+                RitmusLogger.w("Ritmus.registerPushToken failed", e)
+            }
+        }
+    }
+
+    /** Internal: emit a $push_* analytics event carrying the payload envelope. */
+    @JvmStatic
+    internal fun trackPushEvent(
+        eventName: String,
+        msg: studio.ritmus.feedback.push.RitmusPushMessage,
+        actionButton: String?,
+    ) {
+        val props = mutableMapOf<String, Any?>()
+        msg.campaignId?.let { props["campaign_id"] = it }
+        msg.variantId?.let { props["variant_id"] = it }
+        msg.deliveryId?.let { props["delivery_id"] = it }
+        msg.language?.let { props["language"] = it }
+        actionButton?.let { props["action_button"] = it }
+        track(eventName, props)
+    }
+
     // ---------------- Internals ----------------
 
     private fun doInitialize(
@@ -551,6 +611,7 @@ object Ritmus {
                     purposes = SdkConsentPayload.Purposes(
                         analytics = consent.analytics,
                         feedback = consent.feedback,
+                        push = consent.push,
                     ),
                 )
                 api.postJson(
@@ -583,8 +644,23 @@ object Ritmus {
         internal data class Purposes(
             val analytics: Boolean? = null,
             val feedback: Boolean? = null,
+            val push: Boolean? = null,
         )
     }
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkRegisterTokenPayload(
+        val anonymousId: String,
+        val externalId: String? = null,
+        val token: String,
+        val platform: String,
+        val environment: String,
+        val language: String? = null,
+        val timezone: String? = null,
+        val appVersion: String? = null,
+        val sdkVersion: String? = null,
+        val optIn: Boolean = true,
+    )
 
     private val trackedWindowsDays: IntArray = intArrayOf(1, 7, 14, 30, 90)
 }
