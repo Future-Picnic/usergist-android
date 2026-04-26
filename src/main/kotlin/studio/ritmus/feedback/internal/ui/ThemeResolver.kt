@@ -20,7 +20,7 @@ internal object ThemeResolver {
         val subtext = parseColor(host?.colors?.subtext ?: server?.colors?.subtext)
         val border = parseColor(host?.colors?.border ?: server?.colors?.border)
         val radius = host?.radius ?: server?.radius
-        val fontFamily = host?.fontFamily ?: server?.fontFamily
+        val fontFamily = host?.fontFamily ?: server?.fontFamily ?: "Plus Jakarta Sans"
         return ResolvedTheme(
             primary = primary,
             background = background,
