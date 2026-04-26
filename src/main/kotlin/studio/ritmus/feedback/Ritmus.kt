@@ -250,6 +250,59 @@ object Ritmus {
         RitmusLogger.setDebug(enabled)
     }
 
+    // ---------------- Surveys ----------------
+
+    @Volatile
+    var surveyHandlers: studio.ritmus.feedback.api.SurveyHandlers =
+        studio.ritmus.feedback.api.SurveyHandlers()
+
+    /**
+     * Fetches surveys currently open to this user. v1: consent-gated no-op
+     * scaffold — the full transport path ships with the native multi-step
+     * renderer. Returns an empty list today.
+     */
+    fun getAvailableSurveys(
+        callback: (List<studio.ritmus.feedback.api.SurveySummary>) -> Unit,
+    ) {
+        if (!initialized.get()) {
+            callback(emptyList())
+            return
+        }
+        val consent = consentRef.get()?.get()
+        if (consent?.allowsSurvey != true) {
+            callback(emptyList())
+            return
+        }
+        RitmusLogger.d("getAvailableSurveys: survey renderer not yet available on Android")
+        callback(emptyList())
+    }
+
+    /**
+     * Requests that the host app render the specified survey. v1 surface: the
+     * SDK does not ship a native multi-step renderer yet; the host app is
+     * expected to use [surveyHandlers.onShow] to open its own UI.
+     */
+    fun openSurvey(surveyId: String, language: String? = null) {
+        if (!initialized.get()) return
+        val consent = consentRef.get()?.get()
+        if (consent?.allowsSurvey != true) return
+        surveyHandlers.onShow?.invoke(surveyId)
+    }
+
+    /**
+     * Handles a Ritmus survey share link. Returns true when the URL is a
+     * recognized Ritmus survey link.
+     */
+    fun handleSurveyDeepLink(uri: android.net.Uri): Boolean {
+        if (!initialized.get()) return false
+        val pathToken = uri.pathSegments.takeIf { it.size >= 2 && it[0] == "s" }?.get(1)
+        val queryToken = uri.getQueryParameter("survey")
+        val token = pathToken ?: queryToken ?: return false
+        if (token.isEmpty()) return false
+        RitmusLogger.d("survey.deep-link token=${token.take(8)}…")
+        return true
+    }
+
     // ---------------- Push ----------------
 
     /** Internal: register an FCM token with the control plane. */

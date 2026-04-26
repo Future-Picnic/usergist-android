@@ -15,12 +15,18 @@ data class Consent(
     val feedback: Boolean? = null,
     /** Permission to register a device token and receive push notifications. */
     val push: Boolean? = null,
+    /** Permission to deliver survey invitations and collect survey responses. */
+    val survey: Boolean? = null,
 ) {
     /** Whether the transport layer may ship data to the backend. */
     val allowsTransport: Boolean
-        get() = feedback == true
+        get() = feedback == true || survey == true
 
     /** Whether the SDK may register a device token and accept pushes. */
     val allowsPush: Boolean
         get() = push == true
+
+    /** Whether the SDK may deliver surveys. */
+    val allowsSurvey: Boolean
+        get() = survey == true
 }

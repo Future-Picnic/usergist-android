@@ -11,8 +11,14 @@ internal data class ConsentRecord(
     val analytics: Boolean? = null,
     val feedback: Boolean? = null,
     val push: Boolean? = null,
+    val survey: Boolean? = null,
 ) {
-    fun toPublic(): Consent = Consent(analytics = analytics, feedback = feedback, push = push)
+    fun toPublic(): Consent = Consent(
+        analytics = analytics,
+        feedback = feedback,
+        push = push,
+        survey = survey,
+    )
 
     companion object {
         fun from(consent: Consent): ConsentRecord =
@@ -20,6 +26,7 @@ internal data class ConsentRecord(
                 analytics = consent.analytics,
                 feedback = consent.feedback,
                 push = consent.push,
+                survey = consent.survey,
             )
     }
 }
