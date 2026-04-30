@@ -363,6 +363,110 @@ object Ritmus {
         track(eventName, props)
     }
 
+    /** Internal: re-bind the most-recently-registered token to a new identified user. */
+    @JvmStatic
+    internal fun rebindPushToken(externalId: String, token: String) {
+        if (!initialized.get() || externalId.isBlank() || token.isBlank()) return
+        val api = apiRef.get() ?: return
+        val identity = identityRef.get()?.load() ?: return
+        scope.launch {
+            try {
+                val payload = SdkRebindPayload(
+                    anonymousId = identity.anonymousId,
+                    externalId = externalId,
+                    token = token,
+                )
+                api.postJson(
+                    path = Endpoints.PUSH_REBIND,
+                    body = payload,
+                    serializer = SdkRebindPayload.serializer(),
+                )
+            } catch (e: Throwable) {
+                RitmusLogger.w("Ritmus.rebindPushToken failed", e)
+            }
+        }
+    }
+
+    /** Internal: forward applicationDidBecomeActive to the reachability worker. */
+    @JvmStatic
+    internal fun reportPushAppOpen() {
+        if (!initialized.get()) return
+        val api = apiRef.get() ?: return
+        val identity = identityRef.get()?.load() ?: return
+        scope.launch {
+            try {
+                val payload = SdkAppOpenPayload(
+                    anonymousId = identity.anonymousId,
+                    occurredAt = java.time.OffsetDateTime.now().toString(),
+                )
+                api.postJson(
+                    path = Endpoints.PUSH_APP_OPEN,
+                    body = payload,
+                    serializer = SdkAppOpenPayload.serializer(),
+                )
+            } catch (e: Throwable) {
+                RitmusLogger.w("Ritmus.reportPushAppOpen failed", e)
+            }
+        }
+    }
+
+    /** Internal: emit delivered/displayed/dismissed beacon to the server. */
+    @JvmStatic
+    internal fun pushBeacon(
+        kind: String,
+        deliveryId: String,
+        actionButton: String? = null,
+    ) {
+        if (!initialized.get() || deliveryId.isBlank()) return
+        val api = apiRef.get() ?: return
+        val path = when (kind) {
+            "delivered" -> Endpoints.PUSH_DELIVERED
+            "displayed" -> Endpoints.PUSH_DISPLAYED
+            "dismissed" -> Endpoints.PUSH_DISMISSED
+            else -> return
+        }
+        scope.launch {
+            try {
+                val payload = SdkBeaconPayload(
+                    deliveryId = deliveryId,
+                    occurredAt = java.time.OffsetDateTime.now().toString(),
+                    actionButton = actionButton,
+                )
+                api.postJson(
+                    path = path,
+                    body = payload,
+                    serializer = SdkBeaconPayload.serializer(),
+                )
+            } catch (e: Throwable) {
+                RitmusLogger.w("Ritmus.pushBeacon $kind failed", e)
+            }
+        }
+    }
+
+    /** Internal: ack a silent reachability ping. */
+    @JvmStatic
+    internal fun ackSilentPush(pingId: String) {
+        if (!initialized.get() || pingId.isBlank()) return
+        val api = apiRef.get() ?: return
+        val identity = identityRef.get()?.load() ?: return
+        scope.launch {
+            try {
+                val payload = SdkSilentAckPayload(
+                    pingId = pingId,
+                    anonymousId = identity.anonymousId,
+                    receivedAt = java.time.OffsetDateTime.now().toString(),
+                )
+                api.postJson(
+                    path = Endpoints.PUSH_SILENT_ACK,
+                    body = payload,
+                    serializer = SdkSilentAckPayload.serializer(),
+                )
+            } catch (e: Throwable) {
+                RitmusLogger.w("Ritmus.ackSilentPush failed", e)
+            }
+        }
+    }
+
     // ---------------- Internals ----------------
 
     private fun doInitialize(
@@ -713,6 +817,40 @@ object Ritmus {
         val appVersion: String? = null,
         val sdkVersion: String? = null,
         val optIn: Boolean = true,
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkRebindPayload(
+        val anonymousId: String,
+        val externalId: String,
+        val token: String,
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkAppOpenPayload(
+        val anonymousId: String,
+        val occurredAt: String? = null,
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkBeaconPayload(
+        val deliveryId: String,
+        val occurredAt: String? = null,
+        val actionButton: String? = null,
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkSilentAckPayload(
+        val pingId: String,
+        val anonymousId: String,
+        val receivedAt: String? = null,
+    )
+
+    @kotlinx.serialization.Serializable
+    internal data class SdkChannelSubscriptionPayload(
+        val anonymousId: String,
+        val channelId: String,
+        val subscribed: Boolean,
     )
 
     private val trackedWindowsDays: IntArray = intArrayOf(1, 7, 14, 30, 90)

@@ -17,4 +17,12 @@ internal object Endpoints {
     const val PUSH_REGISTER_TOKEN: String = "$BASE/push/register-token"
     const val PUSH_UPDATE_TOKEN: String = "$BASE/push/update-token"
     const val PUSH_INVALIDATE_TOKEN: String = "$BASE/push/invalidate-token"
+    const val PUSH_REBIND: String = "$BASE/push/rebind"
+    const val PUSH_APP_OPEN: String = "$BASE/push/app-open"
+    const val PUSH_DELIVERED: String = "$BASE/push/delivered"
+    const val PUSH_DISPLAYED: String = "$BASE/push/displayed"
+    const val PUSH_DISMISSED: String = "$BASE/push/dismissed"
+    const val PUSH_SILENT_ACK: String = "$BASE/push/silent-ack"
+    const val PUSH_CHANNELS: String = "$BASE/push/channels"
+    const val PUSH_CHANNEL_SUBSCRIPTION: String = "$BASE/push/channels/subscription"
 }
