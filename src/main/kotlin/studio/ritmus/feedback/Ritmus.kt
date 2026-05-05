@@ -854,4 +854,84 @@ object Ritmus {
     )
 
     private val trackedWindowsDays: IntArray = intArrayOf(1, 7, 14, 30, 90)
+
+    // ---------------- Feature Requests (5th pillar) ----------------
+    // STATUS: API surface declared; HTTP wiring + UI Fragments tracked in
+    // PARITY.md. The methods below are deliberately no-ops or scaffolds —
+    // host apps can compile against them today and the runtime fills in
+    // when the implementation lands in a follow-up PR.
+
+    private var requestsHandlers: studio.ritmus.feedback.api.RequestsHandlers? = null
+
+    /** Open the SDK-provided requests board UI. */
+    fun openRequestsBoard() {
+        if (!initialized.get()) return
+        // TODO[P5.req-android]: present RequestsBoardFragment.
+    }
+
+    /** Open the detail view for a specific request. */
+    fun openRequestDetail(requestId: String) {
+        if (!initialized.get()) return
+        // TODO[P5.req-android]: present RequestDetailFragment.
+        @Suppress("UNUSED_PARAMETER") val _id = requestId
+    }
+
+    /**
+     * Submit a new request. Validates client-side per spec §7
+     * (title ≤120, description ≤1500); server enforces the same.
+     */
+    fun submitRequest(
+        title: String,
+        description: String,
+        callback: (Throwable?, studio.ritmus.feedback.api.FeatureRequest?) -> Unit,
+    ) {
+        if (title.isEmpty() || title.length > 120) {
+            callback(IllegalArgumentException("title required, max 120 chars"), null)
+            return
+        }
+        if (description.isEmpty() || description.length > 1500) {
+            callback(IllegalArgumentException("description required, max 1500 chars"), null)
+            return
+        }
+        // TODO[P5.req-android]: POST /v1/sdk/requests via ApiClient.
+        callback(NotImplementedError("Android submitRequest awaiting P5.req-android"), null)
+    }
+
+    /** Fetch a page of requests. */
+    fun getRequests(
+        options: studio.ritmus.feedback.api.GetRequestsOptions =
+            studio.ritmus.feedback.api.GetRequestsOptions(),
+        callback: (Throwable?, studio.ritmus.feedback.api.GetRequestsResult?) -> Unit,
+    ) {
+        @Suppress("UNUSED_PARAMETER") val _opts = options
+        callback(
+            null,
+            studio.ritmus.feedback.api.GetRequestsResult(emptyList(), null),
+        )
+    }
+
+    /** Toggle upvote — idempotent, optimistic at the cache layer. */
+    fun voteOnRequest(
+        requestId: String,
+        vote: Boolean,
+        callback: ((Throwable?, studio.ritmus.feedback.api.RequestVote?) -> Unit)? = null,
+    ) {
+        @Suppress("UNUSED_PARAMETER") val _args = Pair(requestId, vote)
+        callback?.invoke(NotImplementedError("Android voteOnRequest awaiting P5.req-android"), null)
+    }
+
+    /** Toggle follow. Removes both manual and auto-source rows on `false`. */
+    fun followRequest(
+        requestId: String,
+        follow: Boolean,
+        callback: ((Throwable?, studio.ritmus.feedback.api.RequestFollow?) -> Unit)? = null,
+    ) {
+        @Suppress("UNUSED_PARAMETER") val _args = Pair(requestId, follow)
+        callback?.invoke(NotImplementedError("Android followRequest awaiting P5.req-android"), null)
+    }
+
+    /** Register host-app callbacks for the request lifecycle. */
+    fun setRequestsHandlers(handlers: studio.ritmus.feedback.api.RequestsHandlers) {
+        requestsHandlers = handlers
+    }
 }
