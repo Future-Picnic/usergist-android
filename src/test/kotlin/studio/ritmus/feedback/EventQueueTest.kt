@@ -93,6 +93,63 @@ class EventQueueTest {
         assertFalse(storage.eventsFile.exists())
     }
 
+    @Test
+    fun persisted_file_includes_version_header() {
+        enqueue("a", 1)
+        val firstLine = storage.eventsFile.bufferedReader().use { it.readLine() }
+        assertEquals("{\"version\":1}", firstLine)
+    }
+
+    @Test
+    fun hydrates_legacy_bare_lines_and_rewrites_with_header() {
+        // Simulates a pre-versioning SDK install: the events.log file
+        // contains bare event lines with no header. Mirrors the fallback
+        // in packages/sdk-react-native/src/internal/queue.ts.
+        storage.eventsFile.parentFile?.mkdirs()
+        val legacy = buildJsonObject {
+            put("name", JsonPrimitive("legacy"))
+            put("timestamp", JsonPrimitive("2026-04-21T00:00:00.000Z"))
+            put("anonymousId", JsonPrimitive("anon-1"))
+            put("sdkVersion", JsonPrimitive("0.1.0"))
+            put("platform", JsonPrimitive("android"))
+        }
+        storage.eventsFile.writeText(legacy.toString() + "\n")
+
+        val reborn = EventQueue(storage, json, maxQueueSize = 10)
+        assertEquals(1, reborn.size())
+        val peeked = reborn.peek(10)
+        assertEquals("legacy", peeked.first().name)
+
+        // Force a rewrite (overflow path also writes the header).
+        for (i in 1..10) enqueueInto(reborn, "evt", i)
+        val firstLine = storage.eventsFile.bufferedReader().use { it.readLine() }
+        assertEquals("{\"version\":1}", firstLine)
+    }
+
+    @Test
+    fun discards_unknown_version_header() {
+        storage.eventsFile.parentFile?.mkdirs()
+        storage.eventsFile.writeText("{\"version\":999}\n{\"name\":\"x\"}\n")
+        val reborn = EventQueue(storage, json, maxQueueSize = 10)
+        assertEquals(0, reborn.size())
+        assertFalse(storage.eventsFile.exists())
+    }
+
+    private fun enqueueInto(target: EventQueue, name: String, n: Int) {
+        val e = IngestEvent(
+            name = name,
+            timestamp = "2026-04-21T00:00:00.000Z",
+            anonymousId = "anon-1",
+            externalId = null,
+            properties = buildJsonObject { put("n", JsonPrimitive(n)) },
+            sessionId = null,
+            sdkVersion = "0.1.0",
+            appVersion = null,
+            platform = "android",
+        )
+        assertTrue(target.enqueue(e))
+    }
+
     private fun enqueue(name: String, n: Int) {
         val e = IngestEvent(
             name = name,

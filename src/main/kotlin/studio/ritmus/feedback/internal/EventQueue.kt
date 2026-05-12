@@ -2,19 +2,40 @@ package studio.ritmus.feedback.internal
 
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
 import studio.ritmus.feedback.internal.model.IngestEvent
 import java.io.File
+
+// PORTED FROM: packages/sdk-react-native/src/internal/queue.ts
+//
+// Persisted shape on disk:
+//   <header line>: {"version":1}\n
+//   <event line 1>: {...}\n
+//   <event line 2>: {...}\n
+//
+// Bumped every time the on-disk shape changes; older snapshots are
+// discarded rather than risk a deserialise mismatch. Events are
+// best-effort, not durable contracts.
+//
+// Legacy migration: pre-versioning builds wrote bare {...}\n event
+// lines with no header. On hydrate, if the first line is missing the
+// "version" key, we treat the entire file as legacy events; the next
+// `dropOldestLocked()` rewrite re-emits the header.
+private const val QUEUE_SCHEMA_VERSION = 1
+private const val QUEUE_HEADER_LINE = "{\"version\":$QUEUE_SCHEMA_VERSION}"
 
 /**
  * Bounded, persistent FIFO queue of events.
  *
- * Format: JSON-lines (one serialized [IngestEvent] per line). Append is
- * O(1) — we append to the end of the file. Draining loads the file,
+ * Format: versioned header line followed by JSON-lines (one serialized
+ * [IngestEvent] per line). Append is O(1) — we append to the end of the
+ * file (after ensuring the header exists). Draining loads the file,
  * slices off the drained prefix, and rewrites the remainder atomically.
  *
  * Overflow policy: drop-oldest. When [maxQueueSize] is exceeded, we
- * rewrite the tail so newer events survive. This matches the iOS SDK
- * and matches DEV_PRD §6 ("bounded persistent FIFO").
+ * rewrite the tail so newer events survive.
  */
 internal class EventQueue(
     private val storage: Storage,
@@ -40,8 +61,15 @@ internal class EventQueue(
             val file = storage.eventsFile
             try {
                 ensureParent(file)
-                // Ensure we have a baseline count before the append.
+                // First write to a fresh file emits the version header so
+                // future hydrates know how to parse the rest. If the file
+                // already exists with legacy bare-event lines, we leave it
+                // alone — the next dropOldestLocked() rewrite injects the
+                // header (mirrors RN's "re-wrap on next persist" pattern).
                 val previousSize = sizeLocked()
+                if (!file.exists() || file.length() == 0L) {
+                    file.appendText(QUEUE_HEADER_LINE + "\n", Charsets.UTF_8)
+                }
                 file.appendText(line + "\n", Charsets.UTF_8)
                 cachedSize = previousSize + 1
                 if (cachedSize > maxQueueSize) {
@@ -71,10 +99,23 @@ internal class EventQueue(
             if (!file.exists() || file.length() == 0L) return emptyList()
             val events = ArrayList<IngestEvent>(batchSize)
             file.bufferedReader(Charsets.UTF_8).use { reader ->
+                var headerConsumed = false
                 var count = 0
                 while (count < batchSize) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue
+                    if (!headerConsumed) {
+                        headerConsumed = true
+                        val version = readHeaderVersion(line)
+                        if (version != null) {
+                            if (version != QUEUE_SCHEMA_VERSION) {
+                                discardStaleLocked()
+                                return emptyList()
+                            }
+                            continue
+                        }
+                        // No header → legacy line; parse as event.
+                    }
                     val parsed = runCatching {
                         json.decodeFromString<IngestEvent>(line)
                     }.getOrNull()
@@ -128,12 +169,22 @@ internal class EventQueue(
             return 0
         }
         if (cachedSize >= 0) return cachedSize
+        if (isVersionStaleLocked()) {
+            discardStaleLocked()
+            return 0
+        }
         var count = 0
         try {
             file.bufferedReader(Charsets.UTF_8).use { reader ->
+                var headerConsumed = false
                 while (true) {
                     val line = reader.readLine() ?: break
-                    if (line.isNotBlank()) count++
+                    if (line.isBlank()) continue
+                    if (!headerConsumed) {
+                        headerConsumed = true
+                        if (isHeaderLine(line)) continue
+                    }
+                    count++
                 }
             }
         } catch (e: Throwable) {
@@ -143,17 +194,57 @@ internal class EventQueue(
         return count
     }
 
+    /** True when the persisted file's header declares an unrecognised version. */
+    private fun isVersionStaleLocked(): Boolean {
+        val file = storage.eventsFile
+        if (!file.exists() || file.length() == 0L) return false
+        val firstLine = try {
+            file.bufferedReader(Charsets.UTF_8).use { it.readLine() }
+        } catch (e: Throwable) {
+            return false
+        } ?: return false
+        if (firstLine.isBlank()) return false
+        val version = readHeaderVersion(firstLine) ?: return false
+        return version != QUEUE_SCHEMA_VERSION
+    }
+
+    private fun isHeaderLine(line: String): Boolean = readHeaderVersion(line) != null
+
+    private fun readHeaderVersion(line: String): Int? {
+        val obj = runCatching { json.parseToJsonElement(line).jsonObject }.getOrNull()
+            ?: return null
+        return (obj["version"] as? JsonPrimitive)?.intOrNull
+    }
+
+    private fun discardStaleLocked() {
+        try {
+            storage.delete(storage.eventsFile)
+        } catch (e: Throwable) {
+            RitmusLogger.w("EventQueue.discardStaleLocked failed", e)
+        }
+        cachedSize = 0
+    }
+
     private fun dropOldestLocked(count: Int) {
         if (count <= 0) return
         val file = storage.eventsFile
         if (!file.exists()) return
+        if (isVersionStaleLocked()) {
+            discardStaleLocked()
+            return
+        }
         try {
             val remaining = ArrayList<String>()
             file.bufferedReader(Charsets.UTF_8).use { reader ->
+                var headerConsumed = false
                 var skipped = 0
                 while (true) {
                     val line = reader.readLine() ?: break
                     if (line.isBlank()) continue
+                    if (!headerConsumed) {
+                        headerConsumed = true
+                        if (isHeaderLine(line)) continue
+                    }
                     if (skipped < count) {
                         skipped++
                     } else {
@@ -165,7 +256,10 @@ internal class EventQueue(
                 storage.delete(file)
                 cachedSize = 0
             } else {
-                storage.writeText(file, remaining.joinToString(separator = "\n", postfix = "\n"))
+                // Always rewrite with the version header in front, ensuring any
+                // legacy bare-line file gets re-wrapped on its next drop.
+                val body = remaining.joinToString(separator = "\n", postfix = "\n")
+                storage.writeText(file, "$QUEUE_HEADER_LINE\n$body")
                 cachedSize = remaining.size
             }
         } catch (e: Throwable) {

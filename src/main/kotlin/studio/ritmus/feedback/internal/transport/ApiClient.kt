@@ -6,6 +6,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.CertificatePinner
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
@@ -75,6 +76,35 @@ internal class ApiClient(
             json.decodeFromString(deserializer, body)
         } catch (e: Throwable) {
             RitmusLogger.w("ApiClient.getJson decode failed for $path", e)
+            null
+        }
+    }
+
+    /**
+     * POST that returns a parsed response. Used by the Feature Requests
+     * pillar where the server echoes the mutated row back.
+     */
+    suspend fun <Req, Res> postJsonWithResponse(
+        path: String,
+        body: Req,
+        serializer: SerializationStrategy<Req>,
+        deserializer: kotlinx.serialization.DeserializationStrategy<Res>,
+    ): Res? = withContext(Dispatchers.IO) {
+        val encoded = try {
+            json.encodeToString(serializer, body)
+        } catch (e: Throwable) {
+            RitmusLogger.w("ApiClient.postJsonWithResponse encode failed for $path", e)
+            return@withContext null
+        }
+        val request = baseRequestBuilder(path)
+            .post(encoded.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        val (success, respBody) = executeWithRetry(request)
+        if (!success || respBody == null) return@withContext null
+        try {
+            json.decodeFromString(deserializer, respBody)
+        } catch (e: Throwable) {
+            RitmusLogger.w("ApiClient.postJsonWithResponse decode failed for $path", e)
             null
         }
     }
@@ -180,14 +210,46 @@ internal class ApiClient(
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
-        /** Reasonable defaults for SDK-sized payloads. */
-        fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .writeTimeout(20, TimeUnit.SECONDS)
-            .retryOnConnectionFailure(false) // handled by our RetryPolicy
-            .build()
+        /**
+         * Reasonable defaults for SDK-sized payloads. TLS pin material is
+         * sourced from env vars so dev builds against localhost don't need to
+         * juggle pins; production builds set these in their Gradle properties.
+         *
+         * PORTED FROM (concept): cross-platform TLS pinning (P5.4). The pinned
+         * host is `api.ritmus.studio`; pins are SHA-256 of the leaf
+         * SubjectPublicKeyInfo (OkHttp's `CertificatePinner` syntax expects
+         * the `sha256/<base64>` prefix).
+         */
+        fun defaultClient(): OkHttpClient {
+            val builder = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(20, TimeUnit.SECONDS)
+                .retryOnConnectionFailure(false) // handled by our RetryPolicy
+            val pinner = buildPinner()
+            if (pinner != null) builder.certificatePinner(pinner)
+            return builder.build()
+        }
+
+        private fun buildPinner(): CertificatePinner? {
+            val pins = listOfNotNull(
+                System.getenv(TlsPinning.ENV_LEAF),
+                System.getenv(TlsPinning.ENV_BACKUP),
+            ).filter { it.isNotBlank() }
+            if (pins.isEmpty()) return null
+            val b = CertificatePinner.Builder()
+            for (pin in pins) {
+                b.add(TlsPinning.PINNED_HOST, "sha256/$pin")
+            }
+            return b.build()
+        }
     }
+}
+
+internal object TlsPinning {
+    const val ENV_LEAF: String = "RITMUS_TLS_PIN_LEAF"
+    const val ENV_BACKUP: String = "RITMUS_TLS_PIN_BACKUP"
+    const val PINNED_HOST: String = "api.ritmus.studio"
 }
 
 /** A tiny indirection so the client never touches generated `BuildConfig` directly. */

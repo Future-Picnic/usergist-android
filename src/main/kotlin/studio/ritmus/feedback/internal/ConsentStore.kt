@@ -31,9 +31,10 @@ internal data class ConsentRecord(
     }
 }
 
-/** Persistent consent state. Backed by `consent.json`. */
+/** Persistent consent state. Backed by encrypted store (legacy: `consent.json`). */
 internal class ConsentStore(
     private val storage: Storage,
+    private val secure: SecureStore?,
     private val json: Json,
 ) {
 
@@ -50,11 +51,29 @@ internal class ConsentStore(
         if (loaded) return cached
         synchronized(lock) {
             if (loaded) return cached
-            val text = storage.readText(storage.consentFile)
-            val record = text?.let {
+            // Encrypted store first.
+            val secureText = secure?.read(SecureStore.Key.CONSENT)
+            val secureRecord = secureText?.let {
                 runCatching { json.decodeFromString<ConsentRecord>(it) }.getOrNull()
             }
-            cached = record?.toPublic() ?: Consent()
+            if (secureRecord != null) {
+                cached = secureRecord.toPublic()
+                loaded = true
+                return cached
+            }
+            // Legacy plaintext migration.
+            val legacyText = storage.readText(storage.consentFile)
+            val legacyRecord = legacyText?.let {
+                runCatching { json.decodeFromString<ConsentRecord>(it) }.getOrNull()
+            }
+            if (legacyRecord != null) {
+                val migrated = secure?.write(SecureStore.Key.CONSENT, legacyText!!) ?: false
+                if (migrated) storage.delete(storage.consentFile)
+                cached = legacyRecord.toPublic()
+                loaded = true
+                return cached
+            }
+            cached = Consent()
             loaded = true
             return cached
         }
@@ -74,7 +93,10 @@ internal class ConsentStore(
                 RitmusLogger.w("ConsentStore.set encode failed", e)
                 return
             }
-            storage.writeText(storage.consentFile, text)
+            val wroteSecure = secure?.write(SecureStore.Key.CONSENT, text) ?: false
+            if (!wroteSecure) {
+                storage.writeText(storage.consentFile, text)
+            }
         }
     }
 
@@ -83,6 +105,7 @@ internal class ConsentStore(
         synchronized(lock) {
             cached = Consent()
             loaded = true
+            secure?.delete(SecureStore.Key.CONSENT)
             storage.delete(storage.consentFile)
         }
     }

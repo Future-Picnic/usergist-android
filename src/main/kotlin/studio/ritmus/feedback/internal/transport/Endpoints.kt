@@ -25,4 +25,11 @@ internal object Endpoints {
     const val PUSH_SILENT_ACK: String = "$BASE/push/silent-ack"
     const val PUSH_CHANNELS: String = "$BASE/push/channels"
     const val PUSH_CHANNEL_SUBSCRIPTION: String = "$BASE/push/channels/subscription"
+
+    // Feature requests
+    const val REQUESTS: String = "$BASE/requests"
+    fun request(id: String): String = "$BASE/requests/$id"
+    fun requestVote(id: String): String = "$BASE/requests/$id/vote"
+    fun requestFollow(id: String): String = "$BASE/requests/$id/follow"
+    fun requestComments(id: String): String = "$BASE/requests/$id/comments"
 }

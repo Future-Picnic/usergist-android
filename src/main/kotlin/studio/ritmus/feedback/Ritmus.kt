@@ -507,8 +507,9 @@ object Ritmus {
 
         RitmusLogger.setDebug(debug)
         val storage = Storage(appCtx, writeKey)
-        val identityStore = IdentityStore(storage, json)
-        val consentStore = ConsentStore(storage, json)
+        val secureStore = SecureStore.create(appCtx, writeKey)
+        val identityStore = IdentityStore(storage, secureStore, json)
+        val consentStore = ConsentStore(storage, secureStore, json)
         val eventQueue = EventQueue(storage, json, config.maxQueueSize)
         val rulesCache = RulesCache(storage, json)
         val capStore = FrequencyCapStore(storage, json)
@@ -862,18 +863,26 @@ object Ritmus {
     // when the implementation lands in a follow-up PR.
 
     private var requestsHandlers: studio.ritmus.feedback.api.RequestsHandlers? = null
+    private val requestsCache = studio.ritmus.feedback.internal.requests.RequestsCache()
+
+    private fun requestsApi(): studio.ritmus.feedback.internal.requests.RequestsApi? {
+        val api = apiRef.get() ?: return null
+        return studio.ritmus.feedback.internal.requests.RequestsApi(api, json)
+    }
 
     /** Open the SDK-provided requests board UI. */
     fun openRequestsBoard() {
         if (!initialized.get()) return
-        // TODO[P5.req-android]: present RequestsBoardFragment.
+        val ctx = appContextRef.get() ?: return
+        studio.ritmus.feedback.internal.ui.requests.RequestsBoardLauncher.openBoard(ctx)
     }
 
     /** Open the detail view for a specific request. */
     fun openRequestDetail(requestId: String) {
         if (!initialized.get()) return
-        // TODO[P5.req-android]: present RequestDetailFragment.
-        @Suppress("UNUSED_PARAMETER") val _id = requestId
+        val ctx = appContextRef.get() ?: return
+        studio.ritmus.feedback.internal.ui.requests.RequestsBoardLauncher
+            .openDetail(ctx, requestId)
     }
 
     /**
@@ -893,8 +902,27 @@ object Ritmus {
             callback(IllegalArgumentException("description required, max 1500 chars"), null)
             return
         }
-        // TODO[P5.req-android]: POST /v1/sdk/requests via ApiClient.
-        callback(NotImplementedError("Android submitRequest awaiting P5.req-android"), null)
+        val api = requestsApi() ?: return callback(
+            IllegalStateException("SDK not initialized"), null,
+        )
+        val identity = identityRef.get()?.load() ?: return callback(
+            IllegalStateException("identity not hydrated"), null,
+        )
+        scope.launch {
+            val result = api.submit(
+                anonymousId = identity.anonymousId,
+                externalId = identity.externalId,
+                title = title,
+                description = description,
+            )
+            if (result == null) {
+                callback(IllegalStateException("submit failed"), null)
+            } else {
+                requestsCache.upsert(result)
+                requestsHandlers?.onSubmit(result)
+                callback(null, result)
+            }
+        }
     }
 
     /** Fetch a page of requests. */
@@ -903,11 +931,37 @@ object Ritmus {
             studio.ritmus.feedback.api.GetRequestsOptions(),
         callback: (Throwable?, studio.ritmus.feedback.api.GetRequestsResult?) -> Unit,
     ) {
-        @Suppress("UNUSED_PARAMETER") val _opts = options
-        callback(
-            null,
-            studio.ritmus.feedback.api.GetRequestsResult(emptyList(), null),
+        val api = requestsApi() ?: return callback(
+            IllegalStateException("SDK not initialized"), null,
         )
+        val identity = identityRef.get()?.load() ?: return callback(
+            IllegalStateException("identity not hydrated"), null,
+        )
+        scope.launch {
+            val page = api.list(identity.anonymousId, identity.externalId, options)
+            if (page == null) {
+                callback(IllegalStateException("getRequests failed"), null)
+            } else {
+                callback(null, page)
+            }
+        }
+    }
+
+    /** Fetch a single request by id. */
+    fun getRequest(
+        requestId: String,
+        callback: (Throwable?, studio.ritmus.feedback.api.FeatureRequest?) -> Unit,
+    ) {
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"), null)
+        val identity = identityRef.get()?.load() ?: return callback(IllegalStateException("identity"), null)
+        scope.launch {
+            val req = api.getOne(requestId, identity.anonymousId, identity.externalId)
+            if (req == null) callback(IllegalStateException("not found"), null)
+            else {
+                requestsCache.upsert(req)
+                callback(null, req)
+            }
+        }
     }
 
     /** Toggle upvote — idempotent, optimistic at the cache layer. */
@@ -916,8 +970,20 @@ object Ritmus {
         vote: Boolean,
         callback: ((Throwable?, studio.ritmus.feedback.api.RequestVote?) -> Unit)? = null,
     ) {
-        @Suppress("UNUSED_PARAMETER") val _args = Pair(requestId, vote)
-        callback?.invoke(NotImplementedError("Android voteOnRequest awaiting P5.req-android"), null)
+        val rollback = requestsCache.applyOptimisticVote(requestId, vote)
+        val api = requestsApi() ?: return callback?.invoke(IllegalStateException("not init"), null) ?: Unit
+        val identity = identityRef.get()?.load() ?: return callback?.invoke(IllegalStateException("identity"), null) ?: Unit
+        scope.launch {
+            val outcome = api.vote(requestId, identity.anonymousId, identity.externalId, vote)
+            if (outcome == null) {
+                rollback()
+                callback?.invoke(IllegalStateException("vote failed"), null)
+            } else {
+                requestsCache.commitVote(requestId, outcome)
+                requestsHandlers?.onVote(outcome)
+                callback?.invoke(null, outcome)
+            }
+        }
     }
 
     /** Toggle follow. Removes both manual and auto-source rows on `false`. */
@@ -926,8 +992,49 @@ object Ritmus {
         follow: Boolean,
         callback: ((Throwable?, studio.ritmus.feedback.api.RequestFollow?) -> Unit)? = null,
     ) {
-        @Suppress("UNUSED_PARAMETER") val _args = Pair(requestId, follow)
-        callback?.invoke(NotImplementedError("Android followRequest awaiting P5.req-android"), null)
+        val rollback = requestsCache.applyOptimisticFollow(requestId, follow)
+        val api = requestsApi() ?: return callback?.invoke(IllegalStateException("not init"), null) ?: Unit
+        val identity = identityRef.get()?.load() ?: return callback?.invoke(IllegalStateException("identity"), null) ?: Unit
+        scope.launch {
+            val outcome = api.follow(requestId, identity.anonymousId, identity.externalId, follow)
+            if (outcome == null) {
+                rollback()
+                callback?.invoke(IllegalStateException("follow failed"), null)
+            } else {
+                requestsCache.commitFollow(requestId, outcome)
+                requestsHandlers?.onFollow(outcome)
+                callback?.invoke(null, outcome)
+            }
+        }
+    }
+
+    /** Fetch comments for a request. */
+    fun getComments(
+        requestId: String,
+        callback: (Throwable?, List<studio.ritmus.feedback.internal.requests.RequestComment>?) -> Unit,
+    ) {
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"), null)
+        val identity = identityRef.get()?.load() ?: return callback(IllegalStateException("identity"), null)
+        scope.launch {
+            val items = api.comments(requestId, identity.anonymousId, identity.externalId)
+            if (items == null) callback(IllegalStateException("getComments failed"), null)
+            else callback(null, items)
+        }
+    }
+
+    /** Post a comment on a request. */
+    fun postComment(
+        requestId: String,
+        body: String,
+        callback: (Throwable?, studio.ritmus.feedback.internal.requests.RequestComment?) -> Unit,
+    ) {
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"), null)
+        val identity = identityRef.get()?.load() ?: return callback(IllegalStateException("identity"), null)
+        scope.launch {
+            val c = api.postComment(requestId, identity.anonymousId, identity.externalId, body)
+            if (c == null) callback(IllegalStateException("postComment failed"), null)
+            else callback(null, c)
+        }
     }
 
     /** Register host-app callbacks for the request lifecycle. */

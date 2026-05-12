@@ -29,6 +29,7 @@ internal data class Identity(
 /** Thread-safe read/write for the identity file. */
 internal class IdentityStore(
     private val storage: Storage,
+    private val secure: SecureStore?,
     private val json: Json,
 ) {
 
@@ -42,13 +43,32 @@ internal class IdentityStore(
         cached?.let { return it }
         synchronized(lock) {
             cached?.let { return it }
-            val text = storage.readText(storage.identityFile)
-            val parsed = text?.let {
+            // Preferred path: encrypted store.
+            val secureText = secure?.read(SecureStore.Key.IDENTITY)
+            val secureParsed = secureText?.let {
                 runCatching { json.decodeFromString<Identity>(it) }.getOrNull()
             }
-            val resolved = parsed ?: Identity(anonymousId = UUID.randomUUID().toString()).also {
-                persist(it)
+            if (secureParsed != null) {
+                cached = secureParsed
+                return secureParsed
             }
+            // Legacy migration: read plaintext file, write encrypted, delete plaintext.
+            val legacyText = storage.readText(storage.identityFile)
+            val legacyParsed = legacyText?.let {
+                runCatching { json.decodeFromString<Identity>(it) }.getOrNull()
+            }
+            if (legacyParsed != null) {
+                val migrated = secure?.write(
+                    SecureStore.Key.IDENTITY,
+                    legacyText!!,
+                ) ?: false
+                if (migrated) storage.delete(storage.identityFile)
+                cached = legacyParsed
+                return legacyParsed
+            }
+            // Fresh install.
+            val resolved = Identity(anonymousId = UUID.randomUUID().toString())
+            persist(resolved)
             cached = resolved
             return resolved
         }
@@ -83,6 +103,10 @@ internal class IdentityStore(
             RitmusLogger.w("IdentityStore.persist encode failed", e)
             return
         }
-        storage.writeText(storage.identityFile, text)
+        // Encrypted store preferred; plaintext fallback if it's unavailable.
+        val wroteSecure = secure?.write(SecureStore.Key.IDENTITY, text) ?: false
+        if (!wroteSecure) {
+            storage.writeText(storage.identityFile, text)
+        }
     }
 }
