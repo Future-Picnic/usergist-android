@@ -32,4 +32,7 @@ internal object Endpoints {
     fun requestVote(id: String): String = "$BASE/requests/$id/vote"
     fun requestFollow(id: String): String = "$BASE/requests/$id/follow"
     fun requestComments(id: String): String = "$BASE/requests/$id/comments"
+    fun requestComment(requestId: String, commentId: String): String =
+        "$BASE/requests/$requestId/comments/$commentId"
+    const val REQUEST_BRANDING: String = "$BASE/request-branding"
 }

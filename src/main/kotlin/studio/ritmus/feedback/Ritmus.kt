@@ -1037,6 +1037,53 @@ object Ritmus {
         }
     }
 
+    /** Edit a comment the viewer authored. Server returns 404 if not theirs. */
+    fun editComment(
+        requestId: String,
+        commentId: String,
+        body: String,
+        callback: (Throwable?, studio.ritmus.feedback.internal.requests.RequestComment?) -> Unit,
+    ) {
+        if (body.isEmpty() || body.length > 1000) {
+            callback(IllegalArgumentException("comment body required, max 1000 chars"), null)
+            return
+        }
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"), null)
+        val identity = identityRef.get()?.load() ?: return callback(IllegalStateException("identity"), null)
+        scope.launch {
+            val c = api.editComment(requestId, commentId, identity.anonymousId, body)
+            if (c == null) callback(IllegalStateException("editComment failed"), null)
+            else callback(null, c)
+        }
+    }
+
+    /** Delete a comment the viewer authored. */
+    fun deleteComment(
+        requestId: String,
+        commentId: String,
+        callback: (Throwable?) -> Unit = {},
+    ) {
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"))
+        val identity = identityRef.get()?.load() ?: return callback(IllegalStateException("identity"))
+        scope.launch {
+            val ok = api.deleteComment(requestId, commentId, identity.anonymousId)
+            if (!ok) callback(IllegalStateException("deleteComment failed"))
+            else callback(null)
+        }
+    }
+
+    /** Fetch per-app branding (entry label, accent color, etc.). */
+    fun getRequestBranding(
+        callback: (Throwable?, studio.ritmus.feedback.api.RequestBranding?) -> Unit,
+    ) {
+        val api = requestsApi() ?: return callback(IllegalStateException("not init"), null)
+        scope.launch {
+            val b = api.branding()
+            if (b == null) callback(IllegalStateException("getRequestBranding failed"), null)
+            else callback(null, b)
+        }
+    }
+
     /** Register host-app callbacks for the request lifecycle. */
     fun setRequestsHandlers(handlers: studio.ritmus.feedback.api.RequestsHandlers) {
         requestsHandlers = handlers

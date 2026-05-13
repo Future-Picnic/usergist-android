@@ -121,3 +121,10 @@ sealed class RequestsResult<T> {
     data class Success<T>(val value: T) : RequestsResult<T>()
     data class Failure<T>(val error: Throwable) : RequestsResult<T>()
 }
+
+data class RequestBranding(
+    val entryLabel: String,
+    val accentColor: String?,
+    val logoUrl: String?,
+    val introCopy: String?,
+)

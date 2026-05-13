@@ -109,6 +109,46 @@ internal class ApiClient(
         }
     }
 
+    /**
+     * PATCH with JSON body + parsed response. Used by request comment edit.
+     */
+    suspend fun <Req, Res> patchJsonWithResponse(
+        path: String,
+        body: Req,
+        serializer: SerializationStrategy<Req>,
+        deserializer: kotlinx.serialization.DeserializationStrategy<Res>,
+    ): Res? = withContext(Dispatchers.IO) {
+        val encoded = try {
+            json.encodeToString(serializer, body)
+        } catch (e: Throwable) {
+            RitmusLogger.w("ApiClient.patchJsonWithResponse encode failed for $path", e)
+            return@withContext null
+        }
+        val request = baseRequestBuilder(path)
+            .patch(encoded.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        val (success, respBody) = executeWithRetry(request)
+        if (!success || respBody == null) return@withContext null
+        try {
+            json.decodeFromString(deserializer, respBody)
+        } catch (e: Throwable) {
+            RitmusLogger.w("ApiClient.patchJsonWithResponse decode failed for $path", e)
+            null
+        }
+    }
+
+    /**
+     * DELETE with optional query params. Returns true on 2xx.
+     */
+    suspend fun delete(
+        path: String,
+        query: Map<String, String?> = emptyMap(),
+    ): Boolean = withContext(Dispatchers.IO) {
+        val url = buildUrl(path, query) ?: return@withContext false
+        val request = baseRequestBuilder(url).delete().build()
+        executeWithRetry(request).first
+    }
+
     // ---------------- Internal ----------------
 
     private suspend fun executeWithRetry(request: Request): Pair<Boolean, String?> {

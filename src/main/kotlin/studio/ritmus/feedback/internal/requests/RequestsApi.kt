@@ -17,6 +17,7 @@ import kotlinx.serialization.json.put
 import studio.ritmus.feedback.api.FeatureRequest
 import studio.ritmus.feedback.api.GetRequestsOptions
 import studio.ritmus.feedback.api.GetRequestsResult
+import studio.ritmus.feedback.api.RequestBranding
 import studio.ritmus.feedback.api.RequestFollow
 import studio.ritmus.feedback.api.RequestFollowSource
 import studio.ritmus.feedback.api.RequestStatus
@@ -215,6 +216,56 @@ internal class RequestsApi(
             )
         }.getOrNull() ?: return null
         return decodeComment(raw)
+    }
+
+    suspend fun editComment(
+        requestId: String,
+        commentId: String,
+        anonymousId: String,
+        body: String,
+    ): RequestComment? {
+        val payload = buildJsonObject {
+            put("anonymousId", anonymousId)
+            put("body", body)
+        }
+        val raw = runCatching {
+            apiClient.patchJsonWithResponse(
+                path = Endpoints.requestComment(requestId, commentId),
+                body = payload,
+                serializer = JsonObject.serializer(),
+                deserializer = JsonObject.serializer(),
+            )
+        }.getOrNull() ?: return null
+        return decodeComment(raw)
+    }
+
+    suspend fun deleteComment(
+        requestId: String,
+        commentId: String,
+        anonymousId: String,
+    ): Boolean {
+        return runCatching {
+            apiClient.delete(
+                path = Endpoints.requestComment(requestId, commentId),
+                query = mapOf("anonymousId" to anonymousId),
+            )
+        }.getOrNull() ?: false
+    }
+
+    suspend fun branding(): RequestBranding? {
+        val raw = runCatching {
+            apiClient.getJson(
+                path = Endpoints.REQUEST_BRANDING,
+                query = emptyMap(),
+                deserializer = JsonObject.serializer(),
+            )
+        }.getOrNull() ?: return null
+        return RequestBranding(
+            entryLabel = raw["entryLabel"]?.jsonPrimitive?.contentOrNull ?: "Suggestions",
+            accentColor = raw["accentColor"]?.jsonPrimitive?.contentOrNull,
+            logoUrl = raw["logoUrl"]?.jsonPrimitive?.contentOrNull,
+            introCopy = raw["introCopy"]?.jsonPrimitive?.contentOrNull,
+        )
     }
 
     // --- decoders ---
