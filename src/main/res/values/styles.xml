@@ -1,31 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Ritmus.BottomSheet" parent="Theme.Material3.DayNight.BottomSheetDialog">
-        <item name="bottomSheetStyle">@style/Ritmus.BottomSheet.Modal</item>
+    <style name="UserGist.BottomSheet" parent="Theme.Material3.DayNight.BottomSheetDialog">
+        <item name="bottomSheetStyle">@style/UserGist.BottomSheet.Modal</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
-    <style name="Ritmus.BottomSheet.Modal" parent="Widget.Material3.BottomSheet.Modal">
-        <item name="backgroundTint">@color/ritmus_surface</item>
+    <style name="UserGist.BottomSheet.Modal" parent="Widget.Material3.BottomSheet.Modal">
+        <item name="backgroundTint">@color/usergist_surface</item>
     </style>
 
-    <style name="Ritmus.Text.Title" parent="TextAppearance.Material3.TitleLarge">
-        <item name="android:textColor">@color/ritmus_on_surface</item>
+    <style name="UserGist.Text.Title" parent="TextAppearance.Material3.TitleLarge">
+        <item name="android:textColor">@color/usergist_on_surface</item>
         <item name="android:textStyle">bold</item>
     </style>
 
-    <style name="Ritmus.Text.Subtitle" parent="TextAppearance.Material3.BodyMedium">
-        <item name="android:textColor">@color/ritmus_on_surface_subtle</item>
+    <style name="UserGist.Text.Subtitle" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/usergist_on_surface_subtle</item>
     </style>
 
-    <style name="Ritmus.Button.Primary" parent="Widget.Material3.Button">
+    <style name="UserGist.Button.Primary" parent="Widget.Material3.Button">
         <item name="android:textColor">@android:color/white</item>
-        <item name="backgroundTint">@color/ritmus_primary</item>
+        <item name="backgroundTint">@color/usergist_primary</item>
     </style>
 
-    <style name="Ritmus.Button.Text" parent="Widget.Material3.Button.TextButton">
-        <item name="android:textColor">@color/ritmus_on_surface_subtle</item>
+    <style name="UserGist.Button.Text" parent="Widget.Material3.Button.TextButton">
+        <item name="android:textColor">@color/usergist_on_surface_subtle</item>
     </style>
 
 </resources>

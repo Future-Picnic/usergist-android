@@ -14,4 +14,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ritmus-feedback-android"
+rootProject.name = "usergist-feedback-android"

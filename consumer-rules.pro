@@ -1,4 +1,4 @@
-# Ritmus SDK consumer rules — applied to apps that depend on this library.
+# UserGist SDK consumer rules — applied to apps that depend on this library.
 
 # Kotlinx Serialization: keep serializers and annotations.
 -keepattributes *Annotation*, InnerClasses
@@ -12,12 +12,12 @@
 }
 
 # Keep SDK public API.
--keep class studio.ritmus.feedback.Ritmus { *; }
--keep class studio.ritmus.feedback.api.** { *; }
+-keep class studio.usergist.feedback.UserGist { *; }
+-keep class studio.usergist.feedback.api.** { *; }
 
 # Keep model classes used by serialization (they rely on generated serializers).
--keep @kotlinx.serialization.Serializable class studio.ritmus.feedback.** { *; }
--keepclassmembers class studio.ritmus.feedback.** {
+-keep @kotlinx.serialization.Serializable class studio.usergist.feedback.** { *; }
+-keepclassmembers class studio.usergist.feedback.** {
     kotlinx.serialization.KSerializer serializer(...);
     <init>(...);
     <fields>;

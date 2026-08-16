@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "studio.ritmus.feedback"
+    namespace = "studio.usergist.feedback"
     compileSdk = 34
 
     defaultConfig {
@@ -61,20 +61,20 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }
 
-group = "studio.ritmus"
+group = "studio.usergist"
 version = "0.1.0"
 
 publishing {
     publications {
         register<MavenPublication>("release") {
             afterEvaluate { from(components["release"]) }
-            groupId = "studio.ritmus"
+            groupId = "studio.usergist"
             artifactId = "feedback"
             version = "0.1.0"
             pom {
-                name.set("Ritmus Feedback SDK")
-                description.set("Ritmus mobile feedback SDK for Android")
-                url.set("https://ritmus.studio")
+                name.set("userGist Feedback SDK")
+                description.set("userGist mobile feedback SDK for Android")
+                url.set("https://usergist.studio")
                 licenses {
                     license {
                         name.set("Apache-2.0")
@@ -83,13 +83,13 @@ publishing {
                 }
                 developers {
                     developer {
-                        id.set("ritmus")
-                        name.set("Ritmus Studio")
-                        email.set("hello@ritmus.studio")
+                        id.set("usergist")
+                        name.set("userGist")
+                        email.set("hello@usergist.studio")
                     }
                 }
                 scm {
-                    url.set("https://github.com/ritmus-studio/feedback")
+                    url.set("https://github.com/FuturePicnic/usergist")
                 }
             }
         }
