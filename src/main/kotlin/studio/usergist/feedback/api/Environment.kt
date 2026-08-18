@@ -17,5 +17,5 @@ enum class Environment(
     STAGING("https://api.staging.usergist.studio"),
 
     /** Development environment — local or dev backends. */
-    DEVELOPMENT("http://10.0.2.2:3000"),
+    DEVELOPMENT("http://10.0.2.2:28743"),
 }

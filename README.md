@@ -1,7 +1,8 @@
-# userGist Feedback SDK — Android
+# userGist Feedback SDK — Android (experimental)
 
-Native Android SDK for the userGist mobile engagement tool. Kotlin-first, Coroutines-based,
-Kotlinx Serialization for wire types, OkHttp for transport.
+This native Android SDK is not launch-supported yet. Its authenticated-subject,
+durable-instruction, survey-rendering, and release-device gates are tracked in
+`packages/PARITY.md`. Use the React Native SDK for the supported v0.1 launch.
 
 > Published on Maven Central as `studio.usergist:feedback`. Kotlin `1.9+`, `minSdk 24`, `compileSdk 34`.
 
