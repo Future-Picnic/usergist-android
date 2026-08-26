@@ -4,7 +4,18 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import java.util.UUID
+import java.security.SecureRandom
+
+private const val ANONYMOUS_ID_ALPHABET =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+private const val ANONYMOUS_ID_LENGTH = 21
+private val anonymousIdRandom = SecureRandom()
+
+private fun generateAnonymousId(): String = buildString(ANONYMOUS_ID_LENGTH) {
+    repeat(ANONYMOUS_ID_LENGTH) {
+        append(ANONYMOUS_ID_ALPHABET[anonymousIdRandom.nextInt(ANONYMOUS_ID_ALPHABET.length)])
+    }
+}
 
 /**
  * Persistent identity state — a generated `anonymousId` and an optional
@@ -60,14 +71,14 @@ internal class IdentityStore(
             if (legacyParsed != null) {
                 val migrated = secure?.write(
                     SecureStore.Key.IDENTITY,
-                    legacyText!!,
+                    legacyText,
                 ) ?: false
                 if (migrated) storage.delete(storage.identityFile)
                 cached = legacyParsed
                 return legacyParsed
             }
             // Fresh install.
-            val resolved = Identity(anonymousId = UUID.randomUUID().toString())
+            val resolved = Identity(anonymousId = generateAnonymousId())
             persist(resolved)
             cached = resolved
             return resolved
@@ -89,7 +100,7 @@ internal class IdentityStore(
     /** Wipes the identity — issues a new anonymousId and drops externalId. */
     fun reset(): Identity {
         synchronized(lock) {
-            val fresh = Identity(anonymousId = UUID.randomUUID().toString())
+            val fresh = Identity(anonymousId = generateAnonymousId())
             persist(fresh)
             cached = fresh
             return fresh

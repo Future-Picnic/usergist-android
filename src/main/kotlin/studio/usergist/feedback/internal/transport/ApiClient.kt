@@ -2,10 +2,17 @@ package studio.usergist.feedback.internal.transport
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationStrategy
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import okhttp3.CertificatePinner
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -14,7 +21,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import studio.usergist.feedback.internal.BuildConfigProxy
 import studio.usergist.feedback.internal.UserGistLogger
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -37,6 +43,43 @@ internal class ApiClient(
     private val policy: RetryPolicy = RetryPolicy(),
 ) {
 
+    data class CallResult(
+        val success: Boolean,
+        val status: Int?,
+        val body: String?,
+        val subjectUnavailable: Boolean = false,
+    )
+
+    data class DecodedCallResult<T>(
+        val call: CallResult,
+        val value: T?,
+    )
+
+    /**
+     * Server-minted credential binding this installation (or an identified
+     * user) to the write-key's app. Every SDK route except `/session` rejects
+     * requests without it. Volatile keeps foreground/lifecycle calls on other
+     * threads from observing a stale credential.
+     */
+    @Volatile
+    private var subjectToken: String? = null
+    private val subjectTokens = MutableStateFlow<String?>(null)
+
+    fun setSubjectToken(token: String?) {
+        subjectToken = token?.takeIf { it.startsWith("st_") }
+        subjectTokens.value = subjectToken
+    }
+
+    fun cancelAll() {
+        client.dispatcher.cancelAll()
+    }
+
+    private suspend fun awaitSubject(requiresSubject: Boolean): Boolean {
+        if (!requiresSubject) return true
+        if (subjectToken != null) return true
+        return withTimeoutOrNull(15_000) { subjectTokens.filterNotNull().first() } != null
+    }
+
     /**
      * Executes a POST with a serializable payload. Returns `true` iff the
      * request ultimately succeeded (HTTP 2xx).
@@ -45,18 +88,31 @@ internal class ApiClient(
         path: String,
         body: T,
         serializer: SerializationStrategy<T>,
-    ): Boolean = withContext(Dispatchers.IO) {
+        requiresSubject: Boolean = true,
+    ): Boolean = postJsonDetailed(path, body, serializer, requiresSubject).success
+
+    suspend fun <T> postJsonDetailed(
+        path: String,
+        body: T,
+        serializer: SerializationStrategy<T>,
+        requiresSubject: Boolean = true,
+        subjectTokenOverride: String? = null,
+    ): CallResult = withContext(Dispatchers.IO) {
+        if (requiresSubject && subjectTokenOverride == null && !awaitSubject(true)) {
+            UserGistLogger.w("ApiClient blocked $path: subject session unavailable")
+            return@withContext CallResult(false, null, null, subjectUnavailable = true)
+        }
         val encoded = try {
             json.encodeToString(serializer, body)
         } catch (e: Throwable) {
             UserGistLogger.w("ApiClient.postJson encode failed for $path", e)
-            return@withContext false
+            return@withContext CallResult(false, null, null)
         }
         val requestBody = encoded.toRequestBody(JSON_MEDIA_TYPE)
-        val request = baseRequestBuilder(path)
+        val request = baseRequestBuilder(path, subjectTokenOverride)
             .post(requestBody)
             .build()
-        executeWithRetry(request).first
+        executeWithRetry(request)
     }
 
     /**
@@ -67,13 +123,19 @@ internal class ApiClient(
         path: String,
         query: Map<String, String?>,
         deserializer: kotlinx.serialization.DeserializationStrategy<T>,
+        requiresSubject: Boolean = true,
     ): T? = withContext(Dispatchers.IO) {
+        if (!awaitSubject(requiresSubject)) {
+            UserGistLogger.w("ApiClient blocked $path: subject session unavailable")
+            return@withContext null
+        }
         val url = buildUrl(path, query) ?: return@withContext null
-        val request = baseRequestBuilder(url).get().build()
-        val (success, body) = executeWithRetry(request)
-        if (!success || body == null) return@withContext null
+        val request = baseRequestBuilderForUrl(url).get().build()
+        val result = executeWithRetry(request)
+        val body = result.body
+        if (!result.success || body == null) return@withContext null
         try {
-            json.decodeFromString(deserializer, body)
+            json.decodeFromString(deserializer, unwrapEnvelope(body))
         } catch (e: Throwable) {
             UserGistLogger.w("ApiClient.getJson decode failed for $path", e)
             null
@@ -89,23 +151,54 @@ internal class ApiClient(
         body: Req,
         serializer: SerializationStrategy<Req>,
         deserializer: kotlinx.serialization.DeserializationStrategy<Res>,
-    ): Res? = withContext(Dispatchers.IO) {
+        requiresSubject: Boolean = true,
+        idempotent: Boolean = true,
+    ): Res? = postJsonWithResponseDetailed(
+        path = path,
+        body = body,
+        serializer = serializer,
+        deserializer = deserializer,
+        requiresSubject = requiresSubject,
+        idempotent = idempotent,
+    ).value
+
+    suspend fun <Req, Res> postJsonWithResponseDetailed(
+        path: String,
+        body: Req,
+        serializer: SerializationStrategy<Req>,
+        deserializer: kotlinx.serialization.DeserializationStrategy<Res>,
+        requiresSubject: Boolean = true,
+        idempotent: Boolean = true,
+    ): DecodedCallResult<Res> = withContext(Dispatchers.IO) {
+        if (!awaitSubject(requiresSubject)) {
+            UserGistLogger.w("ApiClient blocked $path: subject session unavailable")
+            return@withContext DecodedCallResult(
+                CallResult(false, null, null, subjectUnavailable = true),
+                null,
+            )
+        }
         val encoded = try {
             json.encodeToString(serializer, body)
         } catch (e: Throwable) {
             UserGistLogger.w("ApiClient.postJsonWithResponse encode failed for $path", e)
-            return@withContext null
+            return@withContext DecodedCallResult(CallResult(false, null, null), null)
         }
         val request = baseRequestBuilder(path)
             .post(encoded.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val (success, respBody) = executeWithRetry(request)
-        if (!success || respBody == null) return@withContext null
+        val result = executeWithRetry(request, allowRetry = idempotent)
+        val respBody = result.body
+        if (!result.success || respBody == null) {
+            return@withContext DecodedCallResult(result, null)
+        }
         try {
-            json.decodeFromString(deserializer, respBody)
+            DecodedCallResult(
+                result,
+                json.decodeFromString(deserializer, unwrapEnvelope(respBody)),
+            )
         } catch (e: Throwable) {
             UserGistLogger.w("ApiClient.postJsonWithResponse decode failed for $path", e)
-            null
+            DecodedCallResult(result, null)
         }
     }
 
@@ -117,7 +210,12 @@ internal class ApiClient(
         body: Req,
         serializer: SerializationStrategy<Req>,
         deserializer: kotlinx.serialization.DeserializationStrategy<Res>,
+        requiresSubject: Boolean = true,
     ): Res? = withContext(Dispatchers.IO) {
+        if (!awaitSubject(requiresSubject)) {
+            UserGistLogger.w("ApiClient blocked $path: subject session unavailable")
+            return@withContext null
+        }
         val encoded = try {
             json.encodeToString(serializer, body)
         } catch (e: Throwable) {
@@ -127,10 +225,11 @@ internal class ApiClient(
         val request = baseRequestBuilder(path)
             .patch(encoded.toRequestBody(JSON_MEDIA_TYPE))
             .build()
-        val (success, respBody) = executeWithRetry(request)
-        if (!success || respBody == null) return@withContext null
+        val result = executeWithRetry(request)
+        val respBody = result.body
+        if (!result.success || respBody == null) return@withContext null
         try {
-            json.decodeFromString(deserializer, respBody)
+            json.decodeFromString(deserializer, unwrapEnvelope(respBody))
         } catch (e: Throwable) {
             UserGistLogger.w("ApiClient.patchJsonWithResponse decode failed for $path", e)
             null
@@ -143,15 +242,23 @@ internal class ApiClient(
     suspend fun delete(
         path: String,
         query: Map<String, String?> = emptyMap(),
+        requiresSubject: Boolean = true,
     ): Boolean = withContext(Dispatchers.IO) {
+        if (!awaitSubject(requiresSubject)) {
+            UserGistLogger.w("ApiClient blocked $path: subject session unavailable")
+            return@withContext false
+        }
         val url = buildUrl(path, query) ?: return@withContext false
-        val request = baseRequestBuilder(url).delete().build()
-        executeWithRetry(request).first
+        val request = baseRequestBuilderForUrl(url).delete().build()
+        executeWithRetry(request).success
     }
 
     // ---------------- Internal ----------------
 
-    private suspend fun executeWithRetry(request: Request): Pair<Boolean, String?> {
+    private suspend fun executeWithRetry(
+        request: Request,
+        allowRetry: Boolean = true,
+    ): CallResult {
         var attempt = 0
         while (true) {
             val (outcome, body, retryAfterMs) = try {
@@ -172,10 +279,10 @@ internal class ApiClient(
             }
 
             if (outcome is RetryPolicy.Outcome.Success) {
-                return true to body
+                return CallResult(true, 200, body)
             }
 
-            if (!policy.shouldRetry(outcome, attempt)) {
+            if (!allowRetry || !policy.shouldRetry(outcome, attempt)) {
                 when (outcome) {
                     is RetryPolicy.Outcome.HttpError ->
                         UserGistLogger.w("ApiClient terminal HTTP ${outcome.status} for ${request.url}")
@@ -183,7 +290,8 @@ internal class ApiClient(
                         UserGistLogger.w("ApiClient terminal IO error for ${request.url}", outcome.cause)
                     RetryPolicy.Outcome.Success -> Unit
                 }
-                return false to body
+                val status = (outcome as? RetryPolicy.Outcome.HttpError)?.status
+                return CallResult(false, status, body)
             }
 
             val sleepMs = policy.nextDelayMs(attempt, retryAfterMs)
@@ -193,7 +301,10 @@ internal class ApiClient(
         }
     }
 
-    private fun baseRequestBuilder(path: String): Request.Builder {
+    private fun baseRequestBuilder(
+        path: String,
+        subjectTokenOverride: String? = null,
+    ): Request.Builder {
         val url = if (path.startsWith("http://") || path.startsWith("https://")) {
             path
         } else {
@@ -201,18 +312,41 @@ internal class ApiClient(
         }
         return Request.Builder()
             .url(url)
-            .headers(defaultHeaders())
+            .headers(defaultHeaders(subjectTokenOverride))
     }
 
-    private fun baseRequestBuilder(url: String): Request.Builder =
+    private fun baseRequestBuilderForUrl(url: String): Request.Builder =
         Request.Builder().url(url).headers(defaultHeaders())
 
-    private fun defaultHeaders(): Headers = Headers.Builder()
+    private fun defaultHeaders(subjectTokenOverride: String? = null): Headers = Headers.Builder()
         .add("Authorization", "Bearer $writeKey")
         .add("Content-Type", "application/json")
         .add("Accept", "application/json")
-        .add("X-UserGist-Sdk", "android/${BuildConfigProxy.SDK_VERSION}")
+        .add("X-UserGist-SDK-Version", "android/${BuildConfigProxy.SDK_VERSION}")
+        .add("X-UserGist-Platform", "android")
+        .apply {
+            (subjectTokenOverride ?: subjectToken)?.let {
+                add("X-UserGist-Subject-Token", it)
+            }
+        }
         .build()
+
+    /** Decode the API's `{success,data,error}` wrapper while retaining
+     * compatibility with raw JSON responses used by older/self-hosted APIs. */
+    private fun unwrapEnvelope(body: String): String {
+        return try {
+            val root = json.parseToJsonElement(body) as? JsonObject
+                ?: return body
+            val success = (root["success"] as? JsonPrimitive)?.booleanOrNull
+            if (success == true && root.containsKey("data")) {
+                root.getValue("data").toString()
+            } else {
+                body
+            }
+        } catch (_: Throwable) {
+            body
+        }
+    }
 
     private fun buildUrl(path: String, query: Map<String, String?>): String? = try {
         val base = stripTrailingSlash(baseUrl) + path
@@ -264,6 +398,7 @@ internal class ApiClient(
             val builder = OkHttpClient.Builder()
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .readTimeout(20, TimeUnit.SECONDS)
+                .callTimeout(15, TimeUnit.SECONDS)
                 .writeTimeout(20, TimeUnit.SECONDS)
                 .retryOnConnectionFailure(false) // handled by our RetryPolicy
             val pinner = buildPinner()

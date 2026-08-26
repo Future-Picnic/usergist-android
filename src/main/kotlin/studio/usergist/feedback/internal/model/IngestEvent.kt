@@ -3,6 +3,7 @@ package studio.usergist.feedback.internal.model
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import java.util.UUID
 
 /**
  * A single event enqueued for ingest.
@@ -26,4 +27,41 @@ internal data class IngestEvent(
     @SerialName("appVersion")
     val appVersion: String? = null,
     val platform: String,
+    @SerialName("eventId")
+    val eventId: String = UUID.randomUUID().toString(),
+    val purpose: EventPurpose = EventPurpose.ANALYTICS,
+)
+
+@Serializable
+internal enum class EventPurpose {
+    @SerialName("analytics") ANALYTICS,
+    @SerialName("feedback") FEEDBACK,
+}
+
+/** API event shape. [EventPurpose] is local consent metadata, not wire data. */
+@Serializable
+internal data class WireIngestEvent(
+    val eventId: String,
+    val name: String,
+    val timestamp: String,
+    val anonymousId: String,
+    val externalId: String? = null,
+    val properties: JsonObject? = null,
+    val sessionId: String? = null,
+    val sdkVersion: String,
+    val appVersion: String? = null,
+    val platform: String,
+)
+
+internal fun IngestEvent.toWire(): WireIngestEvent = WireIngestEvent(
+    eventId = eventId,
+    name = name,
+    timestamp = timestamp,
+    anonymousId = anonymousId,
+    externalId = externalId,
+    properties = properties,
+    sessionId = sessionId,
+    sdkVersion = sdkVersion,
+    appVersion = appVersion,
+    platform = platform,
 )

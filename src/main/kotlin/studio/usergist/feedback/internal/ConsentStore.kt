@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import studio.usergist.feedback.api.Consent
+import studio.usergist.feedback.internal.util.DateTime
 
 /** JSON-serializable twin of the public [Consent] type. */
 @Serializable
@@ -12,6 +13,8 @@ internal data class ConsentRecord(
     val feedback: Boolean? = null,
     val push: Boolean? = null,
     val survey: Boolean? = null,
+    val version: Int = 0,
+    val updatedAt: String? = null,
 ) {
     fun toPublic(): Consent = Consent(
         analytics = analytics,
@@ -44,6 +47,12 @@ internal class ConsentStore(
     @Volatile
     private var loaded: Boolean = false
 
+    @Volatile
+    private var currentVersion: Int = 0
+
+    @Volatile
+    private var currentUpdatedAt: String? = null
+
     private val lock = Any()
 
     /** Returns the current consent state, loading from disk on first call. */
@@ -58,6 +67,8 @@ internal class ConsentStore(
             }
             if (secureRecord != null) {
                 cached = secureRecord.toPublic()
+                currentVersion = secureRecord.version
+                currentUpdatedAt = secureRecord.updatedAt
                 loaded = true
                 return cached
             }
@@ -67,9 +78,11 @@ internal class ConsentStore(
                 runCatching { json.decodeFromString<ConsentRecord>(it) }.getOrNull()
             }
             if (legacyRecord != null) {
-                val migrated = secure?.write(SecureStore.Key.CONSENT, legacyText!!) ?: false
+                val migrated = secure?.write(SecureStore.Key.CONSENT, legacyText) ?: false
                 if (migrated) storage.delete(storage.consentFile)
                 cached = legacyRecord.toPublic()
+                currentVersion = legacyRecord.version
+                currentUpdatedAt = legacyRecord.updatedAt
                 loaded = true
                 return cached
             }
@@ -83,27 +96,57 @@ internal class ConsentStore(
     fun allowsTransport(): Boolean = get().allowsTransport
 
     /** Persists a new consent snapshot. */
-    fun set(consent: Consent) {
+    fun set(consent: Consent): Consent {
         synchronized(lock) {
-            cached = consent
+            val previous = get()
+            cached = Consent(
+                analytics = consent.analytics ?: previous.analytics,
+                feedback = consent.feedback ?: previous.feedback,
+                push = consent.push ?: previous.push,
+                survey = consent.survey ?: previous.survey,
+            )
+            currentVersion += 1
+            currentUpdatedAt = DateTime.nowIso()
             loaded = true
             val text = try {
-                json.encodeToString(ConsentRecord.from(consent))
+                json.encodeToString(
+                    ConsentRecord(
+                        analytics = cached.analytics,
+                        feedback = cached.feedback,
+                        push = cached.push,
+                        survey = cached.survey,
+                        version = currentVersion,
+                        updatedAt = currentUpdatedAt,
+                    ),
+                )
             } catch (e: Throwable) {
                 UserGistLogger.w("ConsentStore.set encode failed", e)
-                return
+                return cached
             }
             val wroteSecure = secure?.write(SecureStore.Key.CONSENT, text) ?: false
             if (!wroteSecure) {
                 storage.writeText(storage.consentFile, text)
             }
+            return cached
         }
+    }
+
+    fun version(): Int = synchronized(lock) {
+        get()
+        currentVersion
+    }
+
+    fun updatedAt(): String = synchronized(lock) {
+        get()
+        currentUpdatedAt ?: DateTime.nowIso()
     }
 
     /** Wipes any stored consent (revert to "no consent"). */
     fun clear() {
         synchronized(lock) {
             cached = Consent()
+            currentVersion += 1
+            currentUpdatedAt = DateTime.nowIso()
             loaded = true
             secure?.delete(SecureStore.Key.CONSENT)
             storage.delete(storage.consentFile)

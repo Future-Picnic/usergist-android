@@ -33,7 +33,7 @@ import studio.usergist.feedback.internal.transport.Endpoints
 // are not @Serializable yet; we hand-build JSON via kotlinx.serialization
 // element builders to avoid changing the public data-class declarations.
 
-internal data class RequestComment(
+data class RequestComment(
     val id: String,
     val requestId: String,
     val authorAnonymousId: String?,

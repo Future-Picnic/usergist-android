@@ -11,6 +11,7 @@ data class SurveySummary(
 
 /** Lifecycle callbacks for surveys handled by the host app. */
 data class SurveyHandlers(
+    val onInvite: ((SurveySummary) -> Unit)? = null,
     val onShow: ((surveyId: String) -> Unit)? = null,
     val onComplete: ((surveyId: String, attemptId: String) -> Unit)? = null,
     val onAbandon: ((surveyId: String, attemptId: String) -> Unit)? = null,

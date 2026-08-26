@@ -1,8 +1,8 @@
 # userGist Feedback SDK — Android (experimental)
 
-This native Android SDK is not launch-supported yet. Its authenticated-subject,
-durable-instruction, survey-rendering, and release-device gates are tracked in
-`packages/PARITY.md`. Use the React Native SDK for the supported v0.1 launch.
+This native Android SDK implements the React Native reference protocol, but is
+still experimental until Maven/release-build validation and physical-device
+push testing are complete. See `packages/PARITY.md` for the remaining gates.
 
 > Published on Maven Central as `studio.usergist:feedback`. Kotlin `1.9+`, `minSdk 24`, `compileSdk 34`.
 
@@ -38,6 +38,8 @@ class MyApp : Application() {
         UserGist.onResponse = { response ->
             // analytics hook: response.promptId, response.answers, response.dismissed
         }
+
+        UserGist.setConsent(Consent(analytics = true, feedback = true))
     }
 }
 ```
@@ -53,7 +55,12 @@ UserGist.setConsent(Consent(analytics = true, feedback = true))
 ### Identify and track
 
 ```kotlin
-UserGist.identify(userId = "u_123", properties = mapOf("plan" to "pro"))
+// Mint this st_ token on your authenticated backend. Never ship an rtk_ token.
+UserGist.identify(
+    userId = "u_123",
+    subjectToken = subjectToken,
+    properties = mapOf("plan" to "pro"),
+)
 UserGist.track("checkout_completed", mapOf("amount_cents" to 4999, "currency" to "EUR"))
 ```
 
@@ -109,20 +116,36 @@ Mirrors the layering in `DEV_PRD.md` §6:
                          +-------------------+    +-------------------+
 ```
 
-Storage layout: `context.filesDir/usergist/{sha256(writeKey).take(16)}/`
-containing `events.log`, `identity.json`, `consent.json`,
-`armed_triggers.json`, `frequency_caps.json`.
+The SDK establishes and securely persists a subject session before protected
+calls, preserves anonymous and identified user state, and uses separate durable
+queues for events, identify/feedback/survey mutations, and server instructions.
+Prompt, survey, and in-app campaigns share one process-wide modal FIFO.
+
+Storage is scoped to `context.filesDir/usergist/{sha256(writeKey).take(16)}/`.
+Identity, consent, subject credentials, and mutations prefer Android Keystore-
+backed encrypted storage. Bounded event history, frequency caps, armed campaign
+caches, survey progress, and instruction dedupe state are versioned on disk.
 
 ## Testing
 
-Unit tests live in `src/test` and run on the JVM:
+Unit tests live in `src/test` and run in debug and release JVM variants:
 
 ```
-./gradlew test
+ANDROID_HOME=/path/to/android-sdk gradle test
 ```
 
-Key test suites: `EventQueueTest`, `SegmentEvaluatorTest`,
-`FrequencyCapTest`, `RetryPolicyTest`, `ApiClientTest` (MockWebServer).
+Key suites cover authenticated transport, queue migration/isolation, mutation
+durability, property bounds, armed-campaign decoding, survey branching/resume,
+frequency caps, retries, and request-cache behavior.
+
+## Push limitation
+
+Token registration, invalidation/rebinding, channel registry, silent acks,
+beacons, and host-forwarded receive/open/action/dismiss handling are present.
+The React Native SDK's single-call automatic `enablePush`/`disablePush`, badge,
+and initial-notification helpers do not yet have native Android equivalents.
+End-to-end push validation also requires real FCM credentials and a physical
+device.
 
 ## License
 

@@ -13,19 +13,38 @@ import kotlinx.serialization.json.longOrNull
  * Helpers for converting between `Map<String, Any?>` (the public
  * property-bag shape) and `JsonObject` (the serialization shape).
  *
- * Non-JSON-representable values are lossily coerced to their string
- * representation; that's strictly better than dropping user data.
+ * Event/identify properties intentionally mirror the React Native reference:
+ * at most 100 non-PII keys, scalar values only, and bounded strings. This is
+ * stricter than generic JSON because the ingest schema rejects arrays/maps.
  */
 internal object AnyMap {
 
     /** Coerces a user-supplied property bag into a [JsonObject]. */
     fun toJsonObject(map: Map<String, Any?>?): JsonObject? {
         if (map == null) return null
-        val entries = LinkedHashMap<String, JsonElement>(map.size)
-        for ((key, value) in map) {
-            entries[key] = toJsonElement(value)
+        val entries = LinkedHashMap<String, JsonElement>(minOf(map.size, 100))
+        for ((key, value) in map.entries.take(100)) {
+            if (key.isEmpty() || key.length > 120 || isPiiKey(key)) continue
+            toEventScalar(value)?.let { entries[key] = it }
         }
         return JsonObject(entries)
+    }
+
+    private fun isPiiKey(key: String): Boolean =
+        Regex("(?:^|[._])(email|phone|ssn|tax_id)$", RegexOption.IGNORE_CASE).containsMatchIn(key)
+
+    private fun toEventScalar(value: Any?): JsonElement? = when (value) {
+        null -> JsonNull
+        is Boolean -> JsonPrimitive(value)
+        is String -> JsonPrimitive(value.take(10_000))
+        is Byte -> JsonPrimitive(value.toInt())
+        is Short -> JsonPrimitive(value.toInt())
+        is Int -> JsonPrimitive(value)
+        is Long -> JsonPrimitive(value)
+        is Float -> if (value.isFinite()) JsonPrimitive(value.toDouble()) else null
+        is Double -> if (value.isFinite()) JsonPrimitive(value) else null
+        is Number -> value.toDouble().takeIf { it.isFinite() }?.let(::JsonPrimitive)
+        else -> null
     }
 
     /** Decodes a [JsonObject] back into a `Map<String, Any?>`. */

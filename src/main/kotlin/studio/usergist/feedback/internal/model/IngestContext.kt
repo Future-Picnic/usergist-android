@@ -33,7 +33,7 @@ internal data class IngestContext(
 /** Wire-level request body for `POST /v1/sdk/ingest`. */
 @Serializable
 internal data class IngestBatch(
-    val events: List<IngestEvent>,
+    val events: List<WireIngestEvent>,
     val context: IngestContext,
 )
 

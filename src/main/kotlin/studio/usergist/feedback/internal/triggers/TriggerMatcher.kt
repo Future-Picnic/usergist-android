@@ -27,6 +27,12 @@ internal class TriggerMatcher(
             return null
         }
         for (trigger in candidates) {
+            if (trigger.clientSideEligible == false) {
+                UserGistLogger.d(
+                    "TriggerMatcher: trigger ${trigger.promptId} skipped — server authoritative",
+                )
+                continue
+            }
             if (!SegmentEvaluator.matches(trigger.segmentRules, userState)) {
                 UserGistLogger.d(
                     "TriggerMatcher: trigger ${trigger.promptId} skipped — segment mismatch",
