@@ -26,6 +26,7 @@ import studio.usergist.feedback.api.RequestVote
 import studio.usergist.feedback.internal.UserGistLogger
 import studio.usergist.feedback.internal.transport.ApiClient
 import studio.usergist.feedback.internal.transport.Endpoints
+import java.util.UUID
 
 // PORTED FROM: packages/sdk-react-native/src/UserGist.ts (requests methods)
 //
@@ -33,15 +34,15 @@ import studio.usergist.feedback.internal.transport.Endpoints
 // are not @Serializable yet; we hand-build JSON via kotlinx.serialization
 // element builders to avoid changing the public data-class declarations.
 
-internal data class RequestComment(
+data class RequestComment(
     val id: String,
     val requestId: String,
-    val authorAnonymousId: String?,
-    val authorRole: String?,
     val body: String,
+    val authorAnonymousId: String,
+    val authorExternalId: String?,
+    val viewerIsAuthor: Boolean,
     val createdAt: String,
     val updatedAt: String,
-    val isFromTeam: Boolean,
 )
 
 internal class RequestsApi(
@@ -103,6 +104,7 @@ internal class RequestsApi(
         description: String,
     ): FeatureRequest? {
         val body = buildJsonObject {
+            put("idempotencyKey", UUID.randomUUID().toString())
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
             put("title", title)
@@ -203,6 +205,7 @@ internal class RequestsApi(
         body: String,
     ): RequestComment? {
         val payload = buildJsonObject {
+            put("idempotencyKey", UUID.randomUUID().toString())
             put("anonymousId", anonymousId)
             if (!externalId.isNullOrBlank()) put("externalId", externalId)
             put("body", body)
@@ -314,12 +317,12 @@ internal class RequestsApi(
         return RequestComment(
             id = id,
             requestId = obj["requestId"]?.jsonPrimitive?.contentOrNull ?: "",
-            authorAnonymousId = obj["authorAnonymousId"]?.jsonPrimitive?.contentOrNull,
-            authorRole = obj["authorRole"]?.jsonPrimitive?.contentOrNull,
             body = obj["body"]?.jsonPrimitive?.contentOrNull ?: "",
+            authorAnonymousId = obj["authorAnonymousId"]?.jsonPrimitive?.contentOrNull ?: "",
+            authorExternalId = obj["authorExternalId"]?.jsonPrimitive?.contentOrNull,
+            viewerIsAuthor = obj["viewerIsAuthor"]?.jsonPrimitive?.booleanOrNull ?: false,
             createdAt = obj["createdAt"]?.jsonPrimitive?.contentOrNull ?: "",
             updatedAt = obj["updatedAt"]?.jsonPrimitive?.contentOrNull ?: "",
-            isFromTeam = obj["isFromTeam"]?.jsonPrimitive?.booleanOrNull ?: false,
         )
     }
 }

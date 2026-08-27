@@ -1,47 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:orientation="vertical"
     android:layout_width="match_parent"
     android:layout_height="wrap_content">
 
-    <HorizontalScrollView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:scrollbars="none">
-
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/usergist_nps_group"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            app:singleSelection="true"
-            app:selectionRequired="false"/>
-
-    </HorizontalScrollView>
-
     <LinearLayout
-        android:orientation="horizontal"
+        android:id="@+id/usergist_nps_group"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="10dp">
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Not at all likely"
-            style="@style/UserGist.Text.Subtitle"/>
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:gravity="end"
-            android:text="Extremely likely"
-            style="@style/UserGist.Text.Subtitle"/>
-
-    </LinearLayout>
+        android:orientation="vertical"/>
 
     <com.google.android.material.textfield.TextInputLayout
         android:id="@+id/usergist_nps_followup_layout"

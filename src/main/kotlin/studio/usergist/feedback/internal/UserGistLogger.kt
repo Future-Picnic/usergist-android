@@ -17,6 +17,21 @@ internal object UserGistLogger {
     @Volatile
     private var debugEnabled: Boolean = false
 
+    @Volatile
+    private var diagnosticHandler: ((String) -> Unit)? = null
+
+    fun setDiagnosticHandler(handler: ((String) -> Unit)?) {
+        diagnosticHandler = handler
+    }
+
+    private fun diagnostic(message: String) {
+        try {
+            diagnosticHandler?.invoke(message.take(200))
+        } catch (_: Throwable) {
+            // Host diagnostics must never cross the SDK boundary.
+        }
+    }
+
     /** Enables or disables debug-level logging. Safe to toggle at runtime. */
     fun setDebug(enabled: Boolean) {
         debugEnabled = enabled
@@ -35,14 +50,17 @@ internal object UserGistLogger {
     }
 
     fun w(message: String) {
+        diagnostic(message)
         Log.w(TAG, message)
     }
 
     fun w(message: String, error: Throwable?) {
+        diagnostic(message)
         Log.w(TAG, message, error)
     }
 
     fun e(message: String, error: Throwable?) {
+        diagnostic(message)
         Log.e(TAG, message, error)
     }
 }

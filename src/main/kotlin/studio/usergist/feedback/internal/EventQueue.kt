@@ -23,7 +23,7 @@ import java.io.File
 // lines with no header. On hydrate, if the first line is missing the
 // "version" key, we treat the entire file as legacy events; the next
 // `dropOldestLocked()` rewrite re-emits the header.
-private const val QUEUE_SCHEMA_VERSION = 1
+private const val QUEUE_SCHEMA_VERSION = 2
 private const val QUEUE_HEADER_LINE = "{\"version\":$QUEUE_SCHEMA_VERSION}"
 
 /**
@@ -97,7 +97,11 @@ internal class EventQueue(
         synchronized(lock) {
             val file = storage.eventsFile
             if (!file.exists() || file.length() == 0L) return emptyList()
-            val events = ArrayList<IngestEvent>(batchSize)
+            // Callers use Int.MAX_VALUE when they need to inspect the whole
+            // bounded queue. Treat batchSize as a read limit, not an array
+            // capacity, so that sentinel cannot trigger a multi-gigabyte
+            // allocation before the first line is read.
+            val events = ArrayList<IngestEvent>()
             file.bufferedReader(Charsets.UTF_8).use { reader ->
                 var headerConsumed = false
                 var count = 0
@@ -136,6 +140,22 @@ internal class EventQueue(
     fun drop(count: Int) {
         if (count <= 0) return
         synchronized(lock) { dropOldestLocked(count) }
+    }
+
+    /** Removes selected events without disturbing other identities. */
+    fun remove(eventIds: Collection<String>) {
+        if (eventIds.isEmpty()) return
+        val ids = eventIds.toSet()
+        synchronized(lock) {
+            rewriteFilteredLocked { event -> event.eventId !in ids }
+        }
+    }
+
+    /** Drops queued events whose consent purpose has been withdrawn. */
+    fun removePurpose(purpose: studio.usergist.feedback.internal.model.EventPurpose) {
+        synchronized(lock) {
+            rewriteFilteredLocked { event -> event.purpose != purpose }
+        }
     }
 
     /** Convenience for atomically peeking and then consuming on success. */
@@ -265,6 +285,22 @@ internal class EventQueue(
         } catch (e: Throwable) {
             UserGistLogger.w("EventQueue.dropOldestLocked failed", e)
         }
+    }
+
+    private fun rewriteFilteredLocked(keep: (IngestEvent) -> Boolean) {
+        val current = peek(Int.MAX_VALUE)
+        val remaining = current.filter(keep)
+        if (remaining.size == current.size) return
+        if (remaining.isEmpty()) {
+            storage.delete(storage.eventsFile)
+            cachedSize = 0
+            return
+        }
+        val body = remaining.joinToString(separator = "\n", postfix = "\n") {
+            json.encodeToString(it)
+        }
+        storage.writeText(storage.eventsFile, "$QUEUE_HEADER_LINE\n$body")
+        cachedSize = remaining.size
     }
 
     private fun ensureParent(file: File) {

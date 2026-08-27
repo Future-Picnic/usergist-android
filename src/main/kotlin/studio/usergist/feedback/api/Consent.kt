@@ -20,7 +20,7 @@ data class Consent(
 ) {
     /** Whether the transport layer may ship data to the backend. */
     val allowsTransport: Boolean
-        get() = feedback == true || survey == true
+        get() = analytics == true || feedback == true || push == true || survey == true
 
     /** Whether the SDK may register a device token and accept pushes. */
     val allowsPush: Boolean

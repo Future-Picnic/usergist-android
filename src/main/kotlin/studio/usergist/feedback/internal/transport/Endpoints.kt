@@ -7,11 +7,26 @@ package studio.usergist.feedback.internal.transport
 internal object Endpoints {
     const val BASE: String = "/v1/sdk"
 
+    const val SESSION: String = "$BASE/session"
+    const val SESSION_REVOKE: String = "$BASE/session/revoke"
+    const val INSTRUCTIONS: String = "$BASE/instructions"
+    const val INSTRUCTIONS_ACK: String = "$BASE/instructions/ack"
     const val INGEST: String = "$BASE/ingest"
     const val ARMED_TRIGGERS: String = "$BASE/armed-triggers"
+    const val ARMED_SURVEYS: String = "$BASE/armed-surveys"
+    const val ARMED_INAPP_MESSAGES: String = "$BASE/armed-inapp-messages"
     const val CONSENT: String = "$BASE/consent"
     const val IDENTIFY: String = "$BASE/identify"
     const val RESPONSES: String = "$BASE/responses"
+    fun surveyComplete(attemptId: String): String =
+        "$BASE/surveys/attempts/$attemptId/complete"
+    fun surveyAbandon(attemptId: String): String =
+        "$BASE/surveys/attempts/$attemptId/abandon"
+    const val AVAILABLE_SURVEYS: String = "$BASE/surveys/available"
+    const val RESOLVE_SURVEY_LINK: String = "$BASE/surveys/resolve-link"
+    fun survey(surveyId: String): String = "$BASE/surveys/$surveyId"
+    fun surveyAttempts(surveyId: String): String = "$BASE/surveys/$surveyId/attempts"
+    fun surveyProgress(attemptId: String): String = "$BASE/surveys/attempts/$attemptId"
 
     // Push
     const val PUSH_REGISTER_TOKEN: String = "$BASE/push/register-token"

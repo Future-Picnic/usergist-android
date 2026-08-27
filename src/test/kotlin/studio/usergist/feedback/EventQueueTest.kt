@@ -85,6 +85,17 @@ class EventQueueTest {
     }
 
     @Test
+    fun unbounded_peek_reads_the_bounded_queue_without_preallocating_the_limit() {
+        enqueue("a", 1)
+        enqueue("b", 2)
+
+        val events = queue.peek(Int.MAX_VALUE)
+
+        assertEquals(2, events.size)
+        assertEquals(listOf("a", "b"), events.map(IngestEvent::name))
+    }
+
+    @Test
     fun clear_empties_queue() {
         enqueue("x", 1)
         assertTrue(queue.size() > 0)
@@ -97,7 +108,7 @@ class EventQueueTest {
     fun persisted_file_includes_version_header() {
         enqueue("a", 1)
         val firstLine = storage.eventsFile.bufferedReader().use { it.readLine() }
-        assertEquals("{\"version\":1}", firstLine)
+        assertEquals("{\"version\":2}", firstLine)
     }
 
     @Test
@@ -123,7 +134,7 @@ class EventQueueTest {
         // Force a rewrite (overflow path also writes the header).
         for (i in 1..10) enqueueInto(reborn, "evt", i)
         val firstLine = storage.eventsFile.bufferedReader().use { it.readLine() }
-        assertEquals("{\"version\":1}", firstLine)
+        assertEquals("{\"version\":2}", firstLine)
     }
 
     @Test

@@ -52,8 +52,29 @@ internal class Storage private constructor(
     /** Cached armed triggers payload. */
     val armedTriggersFile: File get() = File(root, "armed_triggers.json")
 
+    /** Cached locally-evaluable survey campaigns. */
+    val armedSurveysFile: File get() = File(root, "armed_surveys.json")
+
+    /** Cached locally-evaluable in-app campaigns. */
+    val armedInAppMessagesFile: File get() = File(root, "armed_inapp_messages.json")
+
     /** Sliding-window frequency cap state. */
     val frequencyCapsFile: File get() = File(root, "frequency_caps.json")
+
+    /** Bounded event timestamp history used by client-side segments. */
+    val userStateFile: File get() = File(root, "user_state.json")
+
+    /** Durable instruction cursor and bounded dedupe ledger. */
+    val instructionStateFile: File get() = File(root, "instruction_state.json")
+
+    /** Locally rendered campaign/event pairs awaiting matching instructions. */
+    val localInstructionDedupeFile: File get() = File(root, "local_instruction_dedupe.json")
+
+    /** Legacy plaintext mutation snapshot used only for secure migration. */
+    val mutationQueueFile: File get() = File(root, "mutation_queue.json")
+
+    /** Versioned in-progress survey snapshots used for offline resume. */
+    val surveyAttemptsFile: File get() = File(root, "survey_attempts.json")
 
     /** Safe UTF-8 read. Returns `null` if the file does not exist. */
     fun readText(file: File): String? = try {

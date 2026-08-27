@@ -20,11 +20,20 @@ internal sealed class Question {
         override val id: String,
         override val title: String,
         override val subtitle: String? = null,
+        val imageUrl: String? = null,
         /** 5 or 10. Any other value is clamped at render time. */
         val scale: Int = 5,
+        val display: Display = Display.STARS,
         @SerialName("lowLabel") val lowLabel: String? = null,
         @SerialName("highLabel") val highLabel: String? = null,
-    ) : Question()
+    ) : Question() {
+        @Serializable
+        enum class Display {
+            @SerialName("stars") STARS,
+            @SerialName("numeric") NUMERIC,
+            @SerialName("emoji") EMOJI,
+        }
+    }
 
     @Serializable
     @SerialName("nps")
@@ -32,7 +41,10 @@ internal sealed class Question {
         override val id: String,
         override val title: String,
         override val subtitle: String? = null,
+        val imageUrl: String? = null,
         @SerialName("followUp") val followUp: String? = null,
+        @SerialName("lowLabel") val lowLabel: String? = null,
+        @SerialName("highLabel") val highLabel: String? = null,
     ) : Question()
 
     @Serializable
@@ -41,6 +53,7 @@ internal sealed class Question {
         override val id: String,
         override val title: String,
         override val subtitle: String? = null,
+        val imageUrl: String? = null,
         val options: List<Choice> = emptyList(),
         @SerialName("multiSelect") val multiSelect: Boolean = false,
     ) : Question() {
@@ -54,6 +67,7 @@ internal sealed class Question {
         override val id: String,
         override val title: String,
         override val subtitle: String? = null,
+        val imageUrl: String? = null,
         val placeholder: String? = null,
         @SerialName("maxLength") val maxLength: Int? = null,
     ) : Question()

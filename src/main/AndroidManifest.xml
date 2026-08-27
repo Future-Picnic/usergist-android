@@ -9,6 +9,11 @@
             android:name=".internal.ui.requests.RequestsBoardActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.Light.DarkActionBar" />
+        <activity
+            android:name=".internal.surveys.SurveyActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/UserGist.Survey" />
     </application>
 
 </manifest>

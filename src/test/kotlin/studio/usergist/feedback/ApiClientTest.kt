@@ -29,6 +29,9 @@ class ApiClientTest {
     @Serializable
     data class Payload(val hello: String, val n: Int)
 
+    @Serializable
+    data class ResponsePayload(val ok: Boolean = false)
+
     @Before
     fun setUp() {
         server = MockWebServer()
@@ -49,6 +52,7 @@ class ApiClientTest {
             json = json,
             policy = RetryPolicy(maxAttempts = 1),
         )
+        client.setSubjectToken("st_test")
         val ok = client.postJson(
             path = "/v1/sdk/ingest",
             body = Payload("hi", 7),
@@ -60,11 +64,42 @@ class ApiClientTest {
         assertEquals("POST", recorded.method)
         assertEquals("/v1/sdk/ingest", recorded.path)
         assertEquals("Bearer wk_abc", recorded.getHeader("Authorization"))
+        assertEquals("st_test", recorded.getHeader("X-UserGist-Subject-Token"))
+        assertEquals("android/0.1.0", recorded.getHeader("X-UserGist-SDK-Version"))
+        assertEquals("android", recorded.getHeader("X-UserGist-Platform"))
         val contentType = recorded.getHeader("Content-Type") ?: ""
         assertTrue("content-type was $contentType", contentType.startsWith("application/json"))
         val body = recorded.body.readUtf8()
         assertTrue(body.contains("\"hello\":\"hi\""))
         assertTrue(body.contains("\"n\":7"))
+    }
+
+    @Test
+    fun request_subject_override_does_not_replace_shared_credential() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+        val client = ApiClient(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            writeKey = "wk_abc",
+            json = json,
+            policy = RetryPolicy(maxAttempts = 1),
+        )
+        client.setSubjectToken("st_anonymous")
+
+        assertTrue(client.postJsonDetailed(
+            path = "/v1/sdk/identify",
+            body = Payload("identify", 1),
+            serializer = Payload.serializer(),
+            subjectTokenOverride = "st_identified",
+        ).success)
+        assertTrue(client.postJson(
+            path = "/v1/sdk/consent",
+            body = Payload("consent", 2),
+            serializer = Payload.serializer(),
+        ))
+
+        assertEquals("st_identified", server.takeRequest().getHeader("X-UserGist-Subject-Token"))
+        assertEquals("st_anonymous", server.takeRequest().getHeader("X-UserGist-Subject-Token"))
     }
 
     @Test
@@ -77,6 +112,7 @@ class ApiClientTest {
             json = json,
             policy = RetryPolicy(maxAttempts = 3, baseDelayMs = 1, capDelayMs = 4),
         )
+        client.setSubjectToken("st_test")
         val ok = client.postJson("/x", Payload("a", 1), Payload.serializer())
         assertTrue(ok)
         assertEquals(2, server.requestCount)
@@ -96,6 +132,7 @@ class ApiClientTest {
             json = json,
             policy = RetryPolicy(maxAttempts = 3, baseDelayMs = 1, capDelayMs = 4),
         )
+        client.setSubjectToken("st_test")
         val ok = client.postJson("/x", Payload("a", 1), Payload.serializer())
         assertTrue(ok)
         assertEquals(2, server.requestCount)
@@ -110,20 +147,45 @@ class ApiClientTest {
             json = json,
             policy = RetryPolicy(maxAttempts = 3, baseDelayMs = 1, capDelayMs = 4),
         )
+        client.setSubjectToken("st_test")
         val ok = client.postJson("/x", Payload("a", 1), Payload.serializer())
         assertEquals(false, ok)
         assertEquals(1, server.requestCount)
     }
 
     @Test
+    fun non_idempotent_post_does_not_retry_session() = runTest {
+        server.enqueue(MockResponse().setResponseCode(503))
+        val client = ApiClient(
+            baseUrl = server.url("/").toString().trimEnd('/'),
+            writeKey = "wk_abc",
+            json = json,
+            policy = RetryPolicy(maxAttempts = 5, baseDelayMs = 1, capDelayMs = 4),
+        )
+
+        val response = client.postJsonWithResponse(
+            path = "/v1/sdk/session",
+            body = Payload("anon", 1),
+            serializer = Payload.serializer(),
+            deserializer = ResponsePayload.serializer(),
+            requiresSubject = false,
+            idempotent = false,
+        )
+
+        assertEquals(null, response)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun get_json_parses_response() = runTest {
-        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"value":"hi"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"data":{"value":"hi"}}"""))
         val client = ApiClient(
             baseUrl = server.url("/").toString().trimEnd('/'),
             writeKey = "wk_abc",
             json = json,
             policy = RetryPolicy(maxAttempts = 1),
         )
+        client.setSubjectToken("st_test")
 
         @Serializable
         data class Resp(val value: String)

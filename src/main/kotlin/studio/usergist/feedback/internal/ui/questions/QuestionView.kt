@@ -10,6 +10,9 @@ import studio.usergist.feedback.api.PromptAnswerValue
 internal interface QuestionView {
     val view: View
 
+    /** Called whenever the answer changes. */
+    var onValueChange: ((PromptAnswerValue) -> Unit)?
+
     /** The currently entered answer, or [PromptAnswerValue.None] if none. */
     fun currentAnswer(): PromptAnswerValue
 

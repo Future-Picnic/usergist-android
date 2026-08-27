@@ -4,6 +4,8 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.os.Build
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import studio.usergist.feedback.UserGist
 
 /**
@@ -61,6 +63,7 @@ data class PushHandlers(
     val onAction: ((UserGistPushMessage, String) -> Unit)? = null,
     val onDismiss: ((UserGistPushMessage) -> Unit)? = null,
     val onSilent: ((String) -> Unit)? = null,
+    val onEvent: ((String, Map<String, Any?>) -> Unit)? = null,
 )
 
 /**
@@ -70,14 +73,15 @@ data class PushHandlers(
  * already-registered channel; otherwise the notification is silently
  * dropped by the OS).
  */
+@Serializable
 data class UserGistPushChannel(
-    val id: String,
-    val displayName: String,
+    @SerialName("channel_id") val id: String,
+    @SerialName("display_name") val displayName: String,
     val description: String?,
     val importance: Int,            // 0..4 mapping to NotificationManager.IMPORTANCE_*
-    val defaultSound: String?,
-    val defaultVibrate: Boolean,
-    val defaultBadge: Boolean,
+    @SerialName("default_sound") val defaultSound: String?,
+    @SerialName("default_vibrate") val defaultVibrate: Boolean,
+    @SerialName("default_badge") val defaultBadge: Boolean,
     val category: String,
 )
 
@@ -107,13 +111,30 @@ object Push {
     /** Call from FirebaseMessagingService.onNewToken. */
     fun didReceiveFcmToken(token: String) {
         if (token.isBlank()) return
-        if (token == lastRegisteredToken) return
         lastRegisteredToken = token
+        // Registration is idempotent server-side. Always forward the current
+        // token so an explicit enable call can retry after an earlier attempt
+        // raced SDK initialization, consent hydration, or session rotation.
         UserGist.registerPushToken(token)
+    }
+
+    /** Invalidates a token when notifications are disabled or rotated. */
+    fun invalidateDeviceToken(token: String) {
+        if (token.isBlank()) return
+        UserGist.invalidatePushToken(token)
+        if (lastRegisteredToken == token) lastRegisteredToken = null
     }
 
     /** Latest token registered with the server, or null if none yet. */
     fun lastToken(): String? = lastRegisteredToken
+
+    internal fun reset() {
+        lastRegisteredToken = null
+    }
+
+    internal fun emitSdkEvent(name: String, properties: Map<String, Any?>) {
+        handlers.onEvent?.invoke(name, properties)
+    }
 
     /**
      * Called by the SDK's identify() flow so subsequent campaign sends to
@@ -131,6 +152,7 @@ object Push {
      * alive — skips the next silent-ping cycle.
      */
     fun appDidBecomeActive() {
+        if (lastRegisteredToken == null) return
         UserGist.reportPushAppOpen()
     }
 
@@ -164,6 +186,16 @@ object Push {
     fun beaconDismissed(deliveryId: String) {
         if (deliveryId.isBlank()) return
         UserGist.pushBeacon("dismissed", deliveryId)
+    }
+
+    /** Fetches the channel registry used to create local OS channels. */
+    fun fetchChannels(callback: (List<UserGistPushChannel>) -> Unit) {
+        UserGist.fetchPushChannels(callback)
+    }
+
+    /** Updates the current user's server-side channel preference. */
+    fun setChannelSubscription(channelId: String, subscribed: Boolean) {
+        UserGist.setPushChannelSubscription(channelId, subscribed)
     }
 
     /**
@@ -240,6 +272,7 @@ object Push {
     fun handleReceived(data: Map<String, String>, title: String? = null, body: String? = null) {
         val msg = UserGistPushMessage.parse(data, title, body) ?: return
         UserGist.trackPushEvent("\$push_received", msg, actionButton = null)
+        emitSdkEvent("\$push_received", eventProperties(msg))
         handlers.onReceive?.invoke(msg, data)
     }
 
@@ -251,6 +284,7 @@ object Push {
     fun handleDisplayed(data: Map<String, String>) {
         val msg = UserGistPushMessage.parse(data) ?: return
         UserGist.trackPushEvent("\$push_displayed", msg, actionButton = null)
+        emitSdkEvent("\$push_displayed", eventProperties(msg))
         msg.deliveryId?.let { UserGist.pushBeacon("displayed", it) }
     }
 
@@ -259,9 +293,14 @@ object Push {
         val msg = UserGistPushMessage.parse(data) ?: return
         if (!actionButton.isNullOrEmpty()) {
             UserGist.trackPushEvent("\$push_action_clicked", msg, actionButton = actionButton)
+            emitSdkEvent(
+                "\$push_action_clicked",
+                eventProperties(msg) + ("action_button" to actionButton),
+            )
             handlers.onAction?.invoke(msg, actionButton)
         } else {
             UserGist.trackPushEvent("\$push_opened", msg, actionButton = null)
+            emitSdkEvent("\$push_opened", eventProperties(msg))
             handlers.onOpen?.invoke(msg)
         }
     }
@@ -270,7 +309,15 @@ object Push {
     fun handleDismissed(data: Map<String, String>) {
         val msg = UserGistPushMessage.parse(data) ?: return
         UserGist.trackPushEvent("\$push_dismissed", msg, actionButton = null)
+        emitSdkEvent("\$push_dismissed", eventProperties(msg))
         msg.deliveryId?.let { UserGist.pushBeacon("dismissed", it) }
         handlers.onDismiss?.invoke(msg)
     }
+
+    private fun eventProperties(message: UserGistPushMessage): Map<String, Any?> = mapOf(
+        "campaign_id" to message.campaignId,
+        "variant_id" to message.variantId,
+        "delivery_id" to message.deliveryId,
+        "language" to message.language,
+    )
 }

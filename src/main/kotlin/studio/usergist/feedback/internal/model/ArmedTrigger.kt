@@ -13,6 +13,7 @@ internal data class ArmedTrigger(
     @SerialName("promptId") val promptId: String,
     @SerialName("eventName") val eventName: String,
     @SerialName("segmentRules") val segmentRules: SerializedSegmentRules? = null,
+    @SerialName("clientSideEligible") val clientSideEligible: Boolean? = null,
     val frequency: FrequencyCaps = FrequencyCaps(),
     val prompt: ClientPrompt,
 )

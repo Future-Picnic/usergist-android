@@ -12,12 +12,16 @@ import com.google.android.material.textfield.TextInputLayout
 import studio.usergist.feedback.R
 import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.model.Question
+import studio.usergist.feedback.internal.ui.ResolvedTheme
 
 /** Renders a short free-text question. */
 internal class ShortTextQuestionView(
     context: Context,
     private val question: Question.ShortText,
+    private val theme: ResolvedTheme,
 ) : QuestionView {
+
+    override var onValueChange: ((PromptAnswerValue) -> Unit)? = null
 
     override val view: View = LayoutInflater.from(context)
         .inflate(R.layout.usergist_question_short_text, FrameLayout(context), false)
@@ -30,16 +34,24 @@ internal class ShortTextQuestionView(
     init {
         layout.hint = question.placeholder
         val max = question.maxLength
+        styleTextAnswer(
+            layout = layout,
+            input = input,
+            theme = theme,
+            minimumHeightDp = 100,
+            minimumLines = 4,
+            maximumLines = 6,
+            maxLength = max,
+        )
         if (max != null && max > 0) {
             input.filters = arrayOf(InputFilter.LengthFilter(max))
-            layout.counterMaxLength = max
-            layout.isCounterEnabled = true
         }
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
                 current = s?.toString().orEmpty()
+                onValueChange?.invoke(currentAnswer())
             }
         })
     }

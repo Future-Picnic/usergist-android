@@ -12,7 +12,9 @@
 
     <style name="UserGist.Text.Title" parent="TextAppearance.Material3.TitleLarge">
         <item name="android:textColor">@color/usergist_on_surface</item>
+        <item name="android:textSize">20sp</item>
         <item name="android:textStyle">bold</item>
+        <item name="lineHeight">26sp</item>
     </style>
 
     <style name="UserGist.Text.Subtitle" parent="TextAppearance.Material3.BodyMedium">
@@ -26,6 +28,23 @@
 
     <style name="UserGist.Button.Text" parent="Widget.Material3.Button.TextButton">
         <item name="android:textColor">@color/usergist_on_surface_subtle</item>
+    </style>
+
+    <style name="UserGist.InApp.Dialog" parent="Theme.Material3.DayNight.Dialog.Alert">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <style name="UserGist.InApp.Full" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+    <style name="UserGist.Survey" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightStatusBar">?attr/isLightTheme</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
     </style>
 
 </resources>
