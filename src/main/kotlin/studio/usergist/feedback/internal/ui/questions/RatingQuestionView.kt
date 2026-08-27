@@ -5,10 +5,11 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.button.MaterialButtonToggleGroup
 import studio.usergist.feedback.R
 import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.model.Question
@@ -19,6 +20,7 @@ internal class RatingQuestionView(
     context: Context,
     private val question: Question.Rating,
     private val theme: ResolvedTheme,
+    initialValue: Int? = null,
 ) : QuestionView {
 
     override var onValueChange: ((PromptAnswerValue) -> Unit)? = null
@@ -30,31 +32,59 @@ internal class RatingQuestionView(
     override val view: View = LayoutInflater.from(context)
         .inflate(R.layout.usergist_question_rating, FrameLayout(context), false)
 
-    private val group: MaterialButtonToggleGroup = view.findViewById(R.id.usergist_rating_group)
+    private val group: LinearLayout = view.findViewById(R.id.usergist_rating_group)
     private val lowLabel: TextView = view.findViewById(R.id.usergist_rating_low)
     private val highLabel: TextView = view.findViewById(R.id.usergist_rating_high)
     private val buttons = mutableListOf<MaterialButton>()
 
-    private var selectedValue: Int? = null
+    private var selectedValue: Int? = initialValue
 
     init {
         val scale = if (question.scale == 10) 10 else 5
+        selectedValue = selectedValue?.takeIf { it in 1..scale }
         val display = if (question.display == Question.Rating.Display.EMOJI && scale != 5) {
             Question.Rating.Display.STARS
         } else {
             question.display
         }
+        var row: LinearLayout? = null
         for (i in 1..scale) {
+            val indexInRow = (i - 1) % 5
+            val targetRow = if (indexInRow == 0) {
+                LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = android.view.Gravity.CENTER
+                }.also { newRow ->
+                    row = newRow
+                    group.addView(
+                        newRow,
+                        LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            if (i > 1) topMargin = dp(context, 8)
+                        },
+                    )
+                }
+            } else {
+                requireNotNull(row)
+            }
             val button = MaterialButton(context, null, com.google.android.material.R.attr.materialButtonOutlinedStyle).apply {
                 id = View.generateViewId()
                 tag = i
                 contentDescription = "Rate $i"
+                isCheckable = true
                 when (display) {
                     Question.Rating.Display.STARS -> {
                         text = "★"
-                        textSize = 28f
+                        // MaterialButton's glyph renders optically smaller than the
+                        // 28sp React Native Text reference inside the same 36dp target.
+                        textSize = 36f
+                        includeFontPadding = false
                         minWidth = dp(context, 36)
                         minimumWidth = dp(context, 36)
+                        minHeight = dp(context, 36)
+                        minimumHeight = dp(context, 36)
                         setPadding(0, 0, 0, 0)
                         insetTop = 0
                         insetBottom = 0
@@ -63,9 +93,12 @@ internal class RatingQuestionView(
                     }
                     Question.Rating.Display.EMOJI -> {
                         text = EMOJI[i - 1]
-                        textSize = 28f
+                        textSize = 30f
+                        includeFontPadding = false
                         minWidth = dp(context, 44)
                         minimumWidth = dp(context, 44)
+                        minHeight = dp(context, 44)
+                        minimumHeight = dp(context, 44)
                         setPadding(0, 0, 0, 0)
                         insetTop = 0
                         insetBottom = 0
@@ -87,20 +120,28 @@ internal class RatingQuestionView(
                     }
                 }
             }
-            group.addView(button)
-            buttons += button
-        }
-        group.addOnButtonCheckedListener { _, checkedId, isChecked ->
-            if (isChecked) {
-                val button = group.findViewById<MaterialButton>(checkedId)
-                selectedValue = (button?.tag as? Int)
-            } else if (group.checkedButtonId == View.NO_ID) {
-                selectedValue = null
+            val itemSize = when (display) {
+                Question.Rating.Display.STARS -> dp(context, 36)
+                Question.Rating.Display.EMOJI -> dp(context, 44)
+                Question.Rating.Display.NUMERIC -> ViewGroup.LayoutParams.WRAP_CONTENT
             }
-            renderSelection(display)
-            if (isChecked && selectedValue != null) {
+            val itemHeight = when (display) {
+                Question.Rating.Display.STARS -> dp(context, 36)
+                Question.Rating.Display.EMOJI -> dp(context, 44)
+                Question.Rating.Display.NUMERIC -> dp(context, 40)
+            }
+            targetRow.addView(
+                button,
+                LinearLayout.LayoutParams(itemSize, itemHeight).apply {
+                    if (indexInRow > 0) marginStart = dp(context, 8)
+                },
+            )
+            button.setOnClickListener {
+                selectedValue = i
+                renderSelection(display)
                 onValueChange?.invoke(currentAnswer())
             }
+            buttons += button
         }
         renderSelection(display)
         lowLabel.text = question.lowLabel.orEmpty()
@@ -138,6 +179,7 @@ internal class RatingQuestionView(
                 }
             }
             button.isSelected = selectedValue == value
+            button.isChecked = selectedValue == value
         }
     }
 

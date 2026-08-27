@@ -84,6 +84,14 @@ internal class NpsQuestionView(
 
         followupLayout.hint = question.followUp
             ?: view.context.getString(R.string.usergist_nps_followup_hint)
+        styleTextAnswer(
+            layout = followupLayout,
+            input = followupInput,
+            theme = theme,
+            minimumHeightDp = 80,
+            minimumLines = 2,
+            maximumLines = 5,
+        )
         followupInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit

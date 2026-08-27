@@ -67,6 +67,9 @@ internal class Storage private constructor(
     /** Durable instruction cursor and bounded dedupe ledger. */
     val instructionStateFile: File get() = File(root, "instruction_state.json")
 
+    /** Locally rendered campaign/event pairs awaiting matching instructions. */
+    val localInstructionDedupeFile: File get() = File(root, "local_instruction_dedupe.json")
+
     /** Legacy plaintext mutation snapshot used only for secure migration. */
     val mutationQueueFile: File get() = File(root, "mutation_queue.json")
 

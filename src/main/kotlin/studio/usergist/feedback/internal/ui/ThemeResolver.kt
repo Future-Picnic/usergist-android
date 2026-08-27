@@ -7,30 +7,35 @@ import studio.usergist.feedback.internal.model.WirePromptTheme
 import studio.usergist.feedback.internal.model.WireThemeColors
 
 /**
- * Merges the server-supplied prompt theme with any SDK-level overrides
- * set by the host app via `setThemeOverrides`. Per-field: host override
- * wins over server value.
+ * Resolves the global SDK theme and the server-supplied prompt theme.
+ * The global theme is the baseline; per-prompt dashboard styling wins
+ * per field, matching the React Native SDK.
  */
 internal object ThemeResolver {
 
     fun merge(server: WirePromptTheme?, host: PromptTheme?): ResolvedTheme {
-        val primary = parseColor(host?.colors?.primary ?: server?.colors?.primary)
-        val background = parseColor(host?.colors?.background ?: server?.colors?.background)
-        val text = parseColor(host?.colors?.text ?: server?.colors?.text)
-        val subtext = parseColor(host?.colors?.subtext ?: server?.colors?.subtext)
-        val border = parseColor(host?.colors?.border ?: server?.colors?.border)
-        val radius = host?.radius ?: server?.radius
-        val fontFamily = host?.fontFamily ?: server?.fontFamily ?: "Plus Jakarta Sans"
+        val tokens = resolveTokens(server, host)
         return ResolvedTheme(
-            primary = primary,
-            background = background,
-            text = text,
-            subtext = subtext,
-            border = border,
-            radiusDp = radius,
-            fontFamily = fontFamily,
+            primary = parseColor(tokens.primary),
+            background = parseColor(tokens.background),
+            text = parseColor(tokens.text),
+            subtext = parseColor(tokens.subtext),
+            border = parseColor(tokens.border),
+            radiusDp = tokens.radius,
+            fontFamily = tokens.fontFamily,
         )
     }
+
+    internal fun resolveTokens(server: WirePromptTheme?, host: PromptTheme?): ResolvedThemeTokens =
+        ResolvedThemeTokens(
+            primary = server?.colors?.primary ?: host?.colors?.primary,
+            background = server?.colors?.background ?: host?.colors?.background,
+            text = server?.colors?.text ?: host?.colors?.text,
+            subtext = server?.colors?.subtext ?: host?.colors?.subtext,
+            border = server?.colors?.border ?: host?.colors?.border,
+            radius = server?.radius ?: host?.radius,
+            fontFamily = server?.fontFamily ?: host?.fontFamily ?: "Plus Jakarta Sans",
+        )
 
     fun toWire(theme: PromptTheme?): WirePromptTheme? {
         if (theme == null) return null
@@ -74,6 +79,16 @@ internal object ThemeResolver {
         }
     }
 }
+
+internal data class ResolvedThemeTokens(
+    val primary: String?,
+    val background: String?,
+    val text: String?,
+    val subtext: String?,
+    val border: String?,
+    val radius: Int?,
+    val fontFamily: String,
+)
 
 /** Resolved (ARGB) theme used by the rendering layer. */
 internal data class ResolvedTheme(

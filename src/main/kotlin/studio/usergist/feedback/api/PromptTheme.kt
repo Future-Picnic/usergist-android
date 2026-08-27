@@ -3,8 +3,9 @@ package studio.usergist.feedback.api
 /**
  * Visual overrides applied to rendered feedback prompts.
  *
- * Values are merged with any server-supplied prompt theme and the system
- * defaults. Any `null` field falls back to the prompt or system default.
+ * This global theme is applied over the system defaults and under any
+ * per-prompt theme selected in the dashboard. Any `null` field falls back
+ * to the system default.
  */
 data class PromptTheme(
     val colors: ThemeColors? = null,

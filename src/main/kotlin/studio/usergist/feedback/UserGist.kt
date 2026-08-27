@@ -33,6 +33,7 @@ import studio.usergist.feedback.internal.Config
 import studio.usergist.feedback.internal.ConsentStore
 import studio.usergist.feedback.internal.EventQueue
 import studio.usergist.feedback.internal.IdentityStore
+import studio.usergist.feedback.internal.LocalInstructionDedupe
 import studio.usergist.feedback.internal.MutationKind
 import studio.usergist.feedback.internal.MutationPurpose
 import studio.usergist.feedback.internal.MutationQueue
@@ -134,11 +135,11 @@ object UserGist {
     private val subjectTokenRef: AtomicReference<String?> = AtomicReference(null)
     private val mutationRef: AtomicReference<MutationQueue?> = AtomicReference(null)
     private val surveyStoreRef: AtomicReference<SurveyStore?> = AtomicReference(null)
+    private val localInstructionDedupeRef: AtomicReference<LocalInstructionDedupe?> =
+        AtomicReference(null)
     private val subjectSessionMutex = Mutex()
     private val instructionMutex = Mutex()
     private val mutationMutex = Mutex()
-    private val localInstructionLock = Any()
-    private val locallyHandledInstructionKeys = LinkedHashSet<String>()
     private val surveyCooldownByCampaign = HashMap<String, Long>()
     private val pendingPromptCapIds = HashSet<String>()
     private val pendingSurveyCapIds = HashSet<String>()
@@ -377,13 +378,11 @@ object UserGist {
                         SurveyHost.clearWaiting()
                         consentRef.get()?.clear()
                         storageRef.get()?.let { it.delete(it.instructionStateFile) }
+                        localInstructionDedupeRef.get()?.clear()
                         storageRef.get()?.let { it.delete(it.userStateFile) }
                         secureRef.get()?.delete(SecureStore.Key.SUBJECT_TOKEN)
                         subjectTokenRef.set(null)
                         studio.usergist.feedback.push.Push.reset()
-                        synchronized(localInstructionLock) {
-                            locallyHandledInstructionKeys.clear()
-                        }
                         synchronized(surveyCooldownByCampaign) {
                             surveyCooldownByCampaign.clear()
                         }
@@ -635,16 +634,18 @@ object UserGist {
                     dedupeKey = "survey-complete:$attemptId",
                 )
                 val result = flushMutations()
-                val delivered = !mutations.has(mutationId) &&
-                    mutationId !in result.permanentlyRejectedIds &&
+                // Durable acceptance is the user-facing completion boundary.
+                // A transient transport failure leaves the mutation encrypted
+                // on disk for lifecycle retry and must not trap the survey UI.
+                val accepted = mutationId !in result.permanentlyRejectedIds &&
                     !resetInProgress.get() &&
                     resetGeneration.get() == deliveryGeneration
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    if (delivered) {
+                    if (accepted) {
                         surveyStoreRef.get()?.removeAttempt(attemptId)
                         surveyHandlers.onComplete?.invoke(survey.id, attemptId)
                     }
-                    callback(delivered)
+                    callback(accepted)
                 }
             }
         },
@@ -687,22 +688,27 @@ object UserGist {
     /** Internal: register an FCM token with the control plane. */
     @JvmStatic
     internal fun registerPushToken(token: String) {
-        if (!initialized.get()) return
-        val api = apiRef.get() ?: return
-        val consent = consentRef.get()?.get() ?: return
-        if (!consent.allowsPush) {
-            UserGistLogger.d("push register skipped: consent not granted")
-            return
-        }
-        val identity = identityRef.get()?.load() ?: return
-        val context = appContextRef.get()
-        val appVersion = try {
-            context?.packageManager?.getPackageInfo(context.packageName, 0)?.versionName
-        } catch (_: Throwable) {
-            null
-        }
+        if (!initialized.get() || token.isBlank()) return
         scope.launch {
             try {
+                // A fresh install can receive its first Firebase token while
+                // the anonymous subject session is still being established.
+                // Session recovery may rotate the installation identity, so
+                // resolve the identity only after that work has completed.
+                ensureSubjectSession()
+                val api = apiRef.get() ?: return@launch
+                val consent = consentRef.get()?.get() ?: return@launch
+                if (!consent.allowsPush) {
+                    UserGistLogger.d("push register skipped: consent not granted")
+                    return@launch
+                }
+                val identity = identityRef.get()?.load() ?: return@launch
+                val context = appContextRef.get()
+                val appVersion = try {
+                    context?.packageManager?.getPackageInfo(context.packageName, 0)?.versionName
+                } catch (_: Throwable) {
+                    null
+                }
                 val payload = SdkRegisterTokenPayload(
                     anonymousId = identity.anonymousId,
                     externalId = identity.externalId,
@@ -719,11 +725,16 @@ object UserGist {
                     sdkVersion = Config.SDK_VERSION,
                     optIn = true,
                 )
-                api.postJson(
+                val registered = api.postJson(
                     path = Endpoints.PUSH_REGISTER_TOKEN,
                     body = payload,
                     serializer = SdkRegisterTokenPayload.serializer(),
                 )
+                if (registered) {
+                    UserGistLogger.d("UserGist.registerPushToken complete")
+                } else {
+                    UserGistLogger.w("UserGist.registerPushToken did not reach the control plane")
+                }
             } catch (e: Throwable) {
                 UserGistLogger.w("UserGist.registerPushToken failed", e)
             }
@@ -967,6 +978,7 @@ object UserGist {
         queueRef.set(eventQueue)
         mutationRef.set(mutationQueue)
         surveyStoreRef.set(surveyStore)
+        localInstructionDedupeRef.set(LocalInstructionDedupe(storage, json))
         rulesRef.set(rulesCache)
         campaignRulesRef.set(campaignRules)
         capsRef.set(capStore)
@@ -1587,18 +1599,11 @@ object UserGist {
         "$type:$refId:event:$eventId"
 
     private fun rememberLocalInstruction(type: String, refId: String, eventId: String) {
-        synchronized(localInstructionLock) {
-            locallyHandledInstructionKeys += localInstructionKey(type, refId, eventId)
-            while (locallyHandledInstructionKeys.size > 200) {
-                locallyHandledInstructionKeys.remove(locallyHandledInstructionKeys.first())
-            }
-        }
+        localInstructionDedupeRef.get()?.remember(localInstructionKey(type, refId, eventId))
     }
 
     private fun consumeLocalInstruction(type: String, refId: String, eventId: String): Boolean =
-        synchronized(localInstructionLock) {
-            locallyHandledInstructionKeys.remove(localInstructionKey(type, refId, eventId))
-        }
+        localInstructionDedupeRef.get()?.consume(localInstructionKey(type, refId, eventId)) == true
 
     private fun present(trigger: ArmedTrigger) {
         val presenter = presenterRef.get()

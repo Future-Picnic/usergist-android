@@ -119,6 +119,7 @@ internal class PromptSheetFragment : BottomSheetDialogFragment() {
 
     override fun onStart() {
         super.onStart()
+        dialog?.window?.setDimAmount(0.4f)
         val bottomSheet = dialog?.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
         bottomSheet?.let {
             BottomSheetBehavior.from(it).apply {

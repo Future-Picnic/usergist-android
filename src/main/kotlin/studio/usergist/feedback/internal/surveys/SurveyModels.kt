@@ -10,6 +10,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import studio.usergist.feedback.internal.model.WirePromptTheme
 import studio.usergist.feedback.internal.model.SerializedSegmentRules
+import studio.usergist.feedback.internal.model.Question
 
 @Serializable
 internal data class ArmedSurvey(
@@ -79,6 +80,18 @@ internal data class SdkSurveyQuestion(
     val minDate: String? = null,
     val maxDate: String? = null,
     val body: String? = null,
+)
+
+/** Maps survey ratings through the same star-first model used by prompts. */
+internal fun SdkSurveyQuestion.toPromptRatingQuestion(): Question.Rating = Question.Rating(
+    id = id,
+    title = title,
+    subtitle = subtitle,
+    imageUrl = imageUrl,
+    scale = if (scale == 10) 10 else 5,
+    display = Question.Rating.Display.STARS,
+    lowLabel = lowLabel,
+    highLabel = highLabel,
 )
 
 @Serializable

@@ -111,8 +111,10 @@ object Push {
     /** Call from FirebaseMessagingService.onNewToken. */
     fun didReceiveFcmToken(token: String) {
         if (token.isBlank()) return
-        if (token == lastRegisteredToken) return
         lastRegisteredToken = token
+        // Registration is idempotent server-side. Always forward the current
+        // token so an explicit enable call can retry after an earlier attempt
+        // raced SDK initialization, consent hydration, or session rotation.
         UserGist.registerPushToken(token)
     }
 

@@ -42,7 +42,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import studio.usergist.feedback.R
+import studio.usergist.feedback.api.PromptAnswerValue
 import studio.usergist.feedback.internal.ui.ResolvedTheme
+import studio.usergist.feedback.internal.ui.questions.RatingQuestionView
+import studio.usergist.feedback.internal.ui.questions.styleTextAnswer
 import studio.usergist.feedback.internal.util.DateTime
 
 /** Full-screen native renderer for the server-authored survey graph. */
@@ -176,18 +179,12 @@ internal class SurveyActivity : AppCompatActivity() {
 
         nextButton = MaterialButton(this).apply {
             text = "Next"
-            minHeight = dp(48)
-            cornerRadius = dp(12)
-            setBackgroundColor(primaryColor())
-            setTextColor(contrastOn(primaryColor()))
+            minHeight = dp(52)
+            cornerRadius = dp(999)
+            backgroundTintList = ColorStateList.valueOf(primaryColor())
+            setTextColor(Color.WHITE)
             setOnClickListener { advance() }
         }
-        root.addView(nextButton, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            setMargins(dp(24), dp(8), dp(24), dp(20))
-        })
         setContentView(root)
     }
 
@@ -236,16 +233,22 @@ internal class SurveyActivity : AppCompatActivity() {
         ).apply { topMargin = dp(24) })
         nextButton.visibility = if (autoAdvances(question.type)) View.GONE else View.VISIBLE
         nextButton.text = if (question.type == "info_screen") "Continue" else "Next"
-        nextButton.isEnabled = true
+        setInlineNextEnabled(
+            question.type != "short_text" && question.type != "long_text" ||
+                SurveyFlowEvaluator.isAnswered(answers[question.id]),
+        )
+        content.addView(nextButton, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            topMargin = dp(20)
+            bottomMargin = dp(20)
+        })
     }
 
     private fun buildInput(question: SdkSurveyQuestion): View = when (question.type) {
         "single_choice" -> choiceGroup(question, question.options, 0)
-        "rating" -> choiceGroup(
-            question,
-            (1..(question.scale ?: 5)).map { SdkSurveyChoice(it.toString(), it.toString()) },
-            1,
-        )
+        "rating" -> ratingInput(question)
         "nps" -> choiceGroup(
             question,
             (0..10).map { SdkSurveyChoice(it.toString(), it.toString()) },
@@ -271,6 +274,28 @@ internal class SurveyActivity : AppCompatActivity() {
             text = "Unsupported question type: ${question.type}"
             setTextColor(textColor())
         }
+    }
+
+    private fun ratingInput(question: SdkSurveyQuestion): View {
+        val initialValue = (answers[question.id] as? JsonPrimitive)
+            ?.content
+            ?.toIntOrNull()
+        return RatingQuestionView(
+            context = this,
+            question = question.toPromptRatingQuestion(),
+            theme = resolvedTheme,
+            initialValue = initialValue,
+        ).apply {
+            onValueChange = { answer ->
+                if (answer is PromptAnswerValue.Number) {
+                    answers[question.id] = JsonPrimitive(answer.value.toInt())
+                    scheduleSave()
+                    handler.postDelayed({
+                        if (currentQuestionId == question.id) advance()
+                    }, RATING_ADVANCE_DELAY_MS)
+                }
+            }
+        }.view
     }
 
     private fun choiceGroup(
@@ -340,24 +365,59 @@ internal class SurveyActivity : AppCompatActivity() {
     }
 
     private fun textInput(question: SdkSurveyQuestion): View {
+        val saved = (answers[question.id] as? JsonPrimitive)?.content.orEmpty()
+        val counter = question.maxLength
+            ?.takeIf { question.type == "long_text" && it > 0 }
+            ?.let { limit ->
+                TextView(this).apply {
+                    text = "${saved.length} / $limit"
+                    textSize = 12f
+                    gravity = Gravity.END
+                    setTextColor(subtextColor())
+                    typeface = resolvedTypeface(Typeface.NORMAL)
+                }
+            }
         val edit = TextInputEditText(this).apply {
             hint = question.placeholder
-            minLines = if (question.type == "long_text") 4 else 1
-            maxLines = if (question.type == "long_text") 8 else 3
             question.maxLength?.let { filters = arrayOf(android.text.InputFilter.LengthFilter(it)) }
-            setText((answers[question.id] as? JsonPrimitive)?.content.orEmpty())
+            setText(saved)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    answers[question.id] = JsonPrimitive(s?.toString().orEmpty())
+                    val value = s?.toString().orEmpty()
+                    answers[question.id] = JsonPrimitive(value)
+                    question.maxLength?.let { counter?.text = "${value.length} / $it" }
+                    if (currentQuestionId == question.id) {
+                        setInlineNextEnabled(value.trim().isNotEmpty())
+                    }
                     scheduleSave()
                 }
                 override fun afterTextChanged(s: Editable?) = Unit
             })
         }
-        return TextInputLayout(this).apply {
-            boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+        val field = TextInputLayout(this).apply {
             addView(edit)
+            styleTextAnswer(
+                layout = this,
+                input = edit,
+                theme = resolvedTheme,
+                minimumHeightDp = if (question.type == "long_text") 120 else 100,
+                minimumLines = if (question.type == "long_text") 5 else 4,
+                maximumLines = if (question.type == "long_text") 8 else 6,
+                maxLength = question.maxLength,
+            )
+        }
+        if (counter == null) return field
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(field, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ))
+            addView(counter, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(4) })
         }
     }
 
@@ -533,6 +593,13 @@ internal class SurveyActivity : AppCompatActivity() {
             end?.cta?.let(::openEndCta)
             finish()
         }
+        content.addView(nextButton, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ).apply {
+            topMargin = dp(32)
+            bottomMargin = dp(20)
+        })
     }
 
     private fun openEndCta(cta: SdkSurveyEndCta) {
@@ -571,6 +638,11 @@ internal class SurveyActivity : AppCompatActivity() {
 
     private fun autoAdvances(type: String): Boolean =
         type == "single_choice" || type == "rating" || type == "nps" || type == "likert"
+
+    private fun setInlineNextEnabled(enabled: Boolean) {
+        nextButton.isEnabled = enabled
+        nextButton.alpha = if (enabled) 1f else 0.4f
+    }
 
     private fun currentQuestion(): SdkSurveyQuestion? = presentation.survey.flow.questions
         .firstOrNull { it.id == currentQuestionId }
@@ -640,7 +712,9 @@ internal class SurveyActivity : AppCompatActivity() {
             setTextColor(resolveColor(com.google.android.material.R.attr.colorError, Color.RED))
             announceForAccessibility(message)
         }
-        content.addView(validationText, LinearLayout.LayoutParams(
+        val insertionIndex = content.indexOfChild(nextButton).takeIf { it >= 0 }
+            ?: content.childCount
+        content.addView(validationText, insertionIndex, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT,
         ).apply { topMargin = dp(12) })
@@ -706,6 +780,7 @@ internal class SurveyActivity : AppCompatActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val RATING_ADVANCE_DELAY_MS = 220L
         private val SAVE_TOKEN = Any()
         private const val STATE_ANSWERS = "usergist.survey.answers"
         private const val STATE_HISTORY = "usergist.survey.history"

@@ -33,14 +33,18 @@ internal class ShortTextQuestionView(
 
     init {
         layout.hint = question.placeholder
-        theme.primary?.let { layout.boxStrokeColor = it }
-        theme.text?.let { input.setTextColor(it) }
-        theme.subtext?.let { input.setHintTextColor(it) }
         val max = question.maxLength
+        styleTextAnswer(
+            layout = layout,
+            input = input,
+            theme = theme,
+            minimumHeightDp = 100,
+            minimumLines = 4,
+            maximumLines = 6,
+            maxLength = max,
+        )
         if (max != null && max > 0) {
             input.filters = arrayOf(InputFilter.LengthFilter(max))
-            layout.counterMaxLength = max
-            layout.isCounterEnabled = true
         }
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
