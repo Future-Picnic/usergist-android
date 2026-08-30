@@ -1059,15 +1059,20 @@ object UserGist {
                             EventPurpose.FEEDBACK,
                         )
                     }
-                    inAppHandlersRef.onCtaClick?.invoke(
-                        InAppCtaClick(
-                            messageId = messageId,
-                            action = cta.action,
-                            target = cta.target,
-                            label = cta.label,
-                            index = index,
-                        ),
+                    val click = InAppCtaClick(
+                        messageId = messageId,
+                        action = cta.action,
+                        target = cta.target,
+                        label = cta.label,
+                        index = index,
+                        actionJson = cta.actionJson,
                     )
+                    runCatching { inAppHandlersRef.onCtaClick?.invoke(click) }
+                    if (cta.action == InAppCtaAction.JSON) {
+                        cta.actionJson?.let {
+                            runCatching { inAppHandlersRef.onJsonAction?.invoke(it, click) }
+                        }
+                    }
                     presenterRef.get()?.retryPending()
                 }
             }
