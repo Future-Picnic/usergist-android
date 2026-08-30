@@ -6,6 +6,9 @@ import android.content.Context
 import android.os.Build
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import studio.usergist.feedback.UserGist
 
 /**
@@ -33,6 +36,7 @@ data class UserGistPushMessage(
     val imageUrl: String?,
     val androidChannelId: String?,
     val actions: String?,
+    val actionButtons: List<PushActionButton> = emptyList(),
 ) {
     companion object {
         /** Parses a UserGist envelope from an FCM data map. */
@@ -45,14 +49,30 @@ data class UserGistPushMessage(
                 language = data["usergist_language"],
                 deepLink = data["usergist_deep_link"],
                 actions = data["usergist_actions"],
+                actionButtons = parseActions(data["usergist_actions"]),
                 title = title ?: data["usergist_title"],
                 body = body ?: data["usergist_body"],
                 imageUrl = data["usergist_image_url"],
                 androidChannelId = data["usergist_channel_id"],
             )
         }
+
+        private fun parseActions(value: String?): List<PushActionButton> {
+            if (value.isNullOrBlank()) return emptyList()
+            return runCatching {
+                Json { ignoreUnknownKeys = true }.decodeFromString<List<PushActionButton>>(value)
+            }.getOrDefault(emptyList())
+        }
     }
 }
+
+@Serializable
+data class PushActionButton(
+    val label: String,
+    val action: String,
+    val target: String? = null,
+    val actionJson: JsonObject? = null,
+)
 
 /**
  * Host-app callback surface.
@@ -61,6 +81,7 @@ data class PushHandlers(
     val onReceive: ((UserGistPushMessage, Map<String, String>) -> Unit)? = null,
     val onOpen: ((UserGistPushMessage) -> Unit)? = null,
     val onAction: ((UserGistPushMessage, String) -> Unit)? = null,
+    val onJsonAction: ((JsonObject, UserGistPushMessage, String) -> Unit)? = null,
     val onDismiss: ((UserGistPushMessage) -> Unit)? = null,
     val onSilent: ((String) -> Unit)? = null,
     val onEvent: ((String, Map<String, Any?>) -> Unit)? = null,
@@ -297,7 +318,17 @@ object Push {
                 "\$push_action_clicked",
                 eventProperties(msg) + ("action_button" to actionButton),
             )
-            handlers.onAction?.invoke(msg, actionButton)
+            runCatching { handlers.onAction?.invoke(msg, actionButton) }
+            val index = actionButton.removePrefix("usergist_action_")
+                .takeIf { actionButton.startsWith("usergist_action_") }
+                ?.toIntOrNull()
+            val button = index?.let { msg.actionButtons.getOrNull(it) }
+                ?: msg.actionButtons.firstOrNull { it.label == actionButton }
+            if (button?.action == "json") {
+                button.actionJson?.let {
+                    runCatching { handlers.onJsonAction?.invoke(it, msg, actionButton) }
+                }
+            }
         } else {
             UserGist.trackPushEvent("\$push_opened", msg, actionButton = null)
             emitSdkEvent("\$push_opened", eventProperties(msg))

@@ -2,6 +2,7 @@ package studio.usergist.feedback.api
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /** Server-authorized in-app message rendered by the SDK. */
 @Serializable
@@ -44,6 +45,7 @@ data class InAppCta(
     val label: String,
     val action: InAppCtaAction,
     val target: String? = null,
+    val actionJson: JsonObject? = null,
 )
 
 @Serializable
@@ -52,6 +54,7 @@ enum class InAppCtaAction {
     @SerialName("deep_link") DEEP_LINK,
     @SerialName("dismiss") DISMISS,
     @SerialName("custom_event") CUSTOM_EVENT,
+    @SerialName("json") JSON,
 }
 
 enum class InAppDismissReason { USER, AUTO }
@@ -63,6 +66,7 @@ data class InAppCtaClick(
     val target: String?,
     val label: String,
     val index: Int,
+    val actionJson: JsonObject? = null,
 )
 
 /** Optional lifecycle callbacks for SDK-rendered in-app messages. */
@@ -70,4 +74,5 @@ data class InAppHandlers(
     val onShow: ((messageId: String) -> Unit)? = null,
     val onDismiss: ((messageId: String, reason: InAppDismissReason) -> Unit)? = null,
     val onCtaClick: ((InAppCtaClick) -> Unit)? = null,
+    val onJsonAction: ((JsonObject, InAppCtaClick) -> Unit)? = null,
 )

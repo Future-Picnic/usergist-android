@@ -43,4 +43,25 @@ class InAppMessageTest {
         assertEquals(InAppCtaAction.CUSTOM_EVENT, message.ctas.single().action)
         assertTrue(message.screenAllowlist.contains("Checkout"))
     }
+
+    @Test
+    fun `decodes json action payload`() {
+        val message = json.decodeFromString<ArmedInAppMessage>(
+            """
+            {
+              "messageId":"message-json",
+              "format":"modal",
+              "title":"Selected offer",
+              "ctas":[{
+                "label":"Show price",
+                "action":"json",
+                "actionJson":{"type":"show_special_price","price":19}
+              }]
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(InAppCtaAction.JSON, message.ctas.single().action)
+        assertEquals("\"show_special_price\"", message.ctas.single().actionJson?.get("type").toString())
+    }
 }
