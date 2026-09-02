@@ -390,7 +390,7 @@ internal class ApiClient(
          * juggle pins; production builds set these in their Gradle properties.
          *
          * PORTED FROM (concept): cross-platform TLS pinning (P5.4). The pinned
-         * host is `api.usergist.studio`; pins are SHA-256 of the leaf
+         * host is `api.usergist.com`; pins are SHA-256 of the leaf
          * SubjectPublicKeyInfo (OkHttp's `CertificatePinner` syntax expects
          * the `sha256/<base64>` prefix).
          */
@@ -424,7 +424,7 @@ internal class ApiClient(
 internal object TlsPinning {
     const val ENV_LEAF: String = "USERGIST_TLS_PIN_LEAF"
     const val ENV_BACKUP: String = "USERGIST_TLS_PIN_BACKUP"
-    const val PINNED_HOST: String = "api.usergist.studio"
+    const val PINNED_HOST: String = "api.usergist.com"
 }
 
 /** A tiny indirection so the client never touches generated `BuildConfig` directly. */
@@ -433,6 +433,6 @@ internal object BuildConfigProxy {
         get() = try {
             studio.usergist.feedback.BuildConfig.SDK_VERSION
         } catch (_: Throwable) {
-            "0.1.0"
+            studio.usergist.feedback.internal.Config.SDK_VERSION_FALLBACK
         }
 }

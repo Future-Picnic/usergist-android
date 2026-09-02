@@ -3,6 +3,7 @@ plugins {
     kotlin("android") version "1.9.24"
     kotlin("plugin.serialization") version "1.9.24"
     id("maven-publish")
+    id("signing")
 }
 
 android {
@@ -38,6 +39,7 @@ android {
     publishing {
         singleVariant("release") {
             withSourcesJar()
+            withJavadocJar()
         }
     }
 }
@@ -66,6 +68,13 @@ group = "studio.usergist"
 version = "0.1.0"
 
 publishing {
+    repositories {
+        maven {
+            name = "centralBundle"
+            url = uri(layout.buildDirectory.dir("central-staging"))
+        }
+    }
+
     publications {
         register<MavenPublication>("release") {
             afterEvaluate { from(components["release"]) }
@@ -75,24 +84,36 @@ publishing {
             pom {
                 name.set("userGist Feedback SDK")
                 description.set("userGist mobile feedback SDK for Android")
-                url.set("https://usergist.studio")
+                url.set("https://usergist.com/docs/sdks/android")
                 licenses {
                     license {
-                        name.set("Apache-2.0")
-                        url.set("https://www.apache.org/licenses/LICENSE-2.0")
+                        name.set("MIT License")
+                        url.set("https://opensource.org/license/mit")
+                        distribution.set("repo")
                     }
                 }
                 developers {
                     developer {
                         id.set("usergist")
                         name.set("userGist")
-                        email.set("hello@usergist.studio")
+                        email.set("hello@usergist.com")
                     }
                 }
                 scm {
-                    url.set("https://github.com/FuturePicnic/usergist")
+                    url.set("https://github.com/Future-Picnic/usergist-android")
+                    connection.set("scm:git:https://github.com/Future-Picnic/usergist-android.git")
+                    developerConnection.set("scm:git:ssh://git@github.com/Future-Picnic/usergist-android.git")
                 }
             }
         }
+    }
+}
+
+signing {
+    val privateKey = providers.environmentVariable("GPG_PRIVATE_KEY").orNull
+    val privateKeyPassword = providers.environmentVariable("GPG_PRIVATE_KEY_PASSWORD").orNull
+    if (!privateKey.isNullOrBlank()) {
+        useInMemoryPgpKeys(privateKey, privateKeyPassword)
+        sign(publishing.publications["release"])
     }
 }

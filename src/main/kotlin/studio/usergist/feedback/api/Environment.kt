@@ -11,10 +11,12 @@ enum class Environment(
     val defaultApiUrl: String,
 ) {
     /** Production environment — real user data. */
-    PRODUCTION("https://api.usergist.studio"),
+    PRODUCTION("https://api.usergist.com"),
 
     /** Staging environment — pre-release validation. */
-    STAGING("https://api.staging.usergist.studio"),
+    // Staging identifies the customer's app data environment. Both customer
+    // tiers use the same public UserGist edge and remain isolated by app/key.
+    STAGING("https://api.usergist.com"),
 
     /** Development environment — local or dev backends. */
     DEVELOPMENT("http://10.0.2.2:28743"),

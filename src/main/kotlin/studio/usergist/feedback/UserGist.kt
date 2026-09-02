@@ -113,6 +113,10 @@ object UserGist {
     val anonymousId: String
         get() = identityRef.get()?.load()?.anonymousId ?: ""
 
+    /** Stable identified-user ID accepted by the server, or null while anonymous. */
+    val externalId: String?
+        get() = identityRef.get()?.load()?.externalId
+
     // ---------------- Internal state ----------------
 
     private val initialized: AtomicBoolean = AtomicBoolean(false)

@@ -1,10 +1,9 @@
-# userGist Feedback SDK — Android (experimental)
+# userGist Feedback SDK — Android
 
-This native Android SDK implements the React Native reference protocol, but is
-still experimental until Maven/release-build validation and physical-device
-push testing are complete. See `packages/PARITY.md` for the remaining gates.
+Production Android SDK for userGist feedback, surveys, in-app messaging,
+feature requests, analytics events, and host-compatible FCM delivery.
 
-> Published on Maven Central as `studio.usergist:feedback`. Kotlin `1.9+`, `minSdk 24`, `compileSdk 34`.
+> Maven coordinate: `studio.usergist:feedback`. Kotlin `1.9+`, `minSdk 24`, `compileSdk 34`.
 
 ## Install
 
@@ -89,7 +88,7 @@ UserGist.reset()
 
 ## Architecture
 
-Mirrors the layering in `DEV_PRD.md` §6:
+The Android implementation uses the same production layering as the other SDKs:
 
 ```
 +-------------------+    +-------------------+    +-------------------+
@@ -131,7 +130,7 @@ caches, survey progress, and instruction dedupe state are versioned on disk.
 Unit tests live in `src/test` and run in debug and release JVM variants:
 
 ```
-ANDROID_HOME=/path/to/android-sdk gradle test
+ANDROID_HOME=/path/to/android-sdk ./gradlew --no-daemon test lintRelease assembleRelease
 ```
 
 Key suites cover authenticated transport, queue migration/isolation, mutation
@@ -149,4 +148,4 @@ device.
 
 ## License
 
-Apache-2.0 © userGist Studio
+MIT © 2025-2026 userGist

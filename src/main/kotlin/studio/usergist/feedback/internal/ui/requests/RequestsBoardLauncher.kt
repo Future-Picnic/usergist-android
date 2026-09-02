@@ -19,6 +19,7 @@ import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import studio.usergist.feedback.UserGist
 import studio.usergist.feedback.api.FeatureRequest
@@ -89,6 +90,9 @@ class RequestsBoardActivity : AppCompatActivity() {
         }
         root.addView(contentLayout)
         setContentView(root)
+        onBackPressedDispatcher.addCallback(this) {
+            if (mode == RequestsBoardLauncher.MODE_BOARD) finish() else loadBoard()
+        }
 
         UserGist.getRequestBranding { _, branding ->
             runOnUiThread {
@@ -624,8 +628,4 @@ class RequestsBoardActivity : AppCompatActivity() {
         return true
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        if (mode == RequestsBoardLauncher.MODE_BOARD) super.onBackPressed() else loadBoard()
-    }
 }
