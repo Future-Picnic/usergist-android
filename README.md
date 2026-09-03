@@ -137,14 +137,16 @@ Key suites cover authenticated transport, queue migration/isolation, mutation
 durability, property bounds, armed-campaign decoding, survey branching/resume,
 frequency caps, retries, and request-cache behavior.
 
-## Push limitation
+## Push integration
 
 Token registration, invalidation/rebinding, channel registry, silent acks,
 beacons, and host-forwarded receive/open/action/dismiss handling are present.
 The React Native SDK's single-call automatic `enablePush`/`disablePush`, badge,
 and initial-notification helpers do not yet have native Android equivalents.
-End-to-end push validation also requires real FCM credentials and a physical
-device.
+The userGist FCM delivery path has passed end-to-end physical-device validation.
+Every integrating app must still configure its own Firebase project, package
+identifier, FCM service credentials, and callback forwarding, then test its
+signed build on its own physical device.
 
 ## License
 
