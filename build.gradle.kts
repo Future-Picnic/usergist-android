@@ -13,7 +13,7 @@ android {
     defaultConfig {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
-        buildConfigField("String", "SDK_VERSION", "\"0.1.0\"")
+        buildConfigField("String", "SDK_VERSION", "\"0.1.1\"")
     }
 
     compileOptions {
@@ -64,8 +64,8 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
 }
 
-group = "studio.usergist"
-version = "0.1.0"
+group = "com.usergist"
+version = "0.1.1"
 
 publishing {
     repositories {
@@ -78,9 +78,9 @@ publishing {
     publications {
         register<MavenPublication>("release") {
             afterEvaluate { from(components["release"]) }
-            groupId = "studio.usergist"
+            groupId = "com.usergist"
             artifactId = "feedback"
-            version = "0.1.0"
+            version = "0.1.1"
             pom {
                 name.set("userGist Feedback SDK")
                 description.set("userGist mobile feedback SDK for Android")

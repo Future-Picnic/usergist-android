@@ -121,7 +121,7 @@ class EventQueueTest {
             put("name", JsonPrimitive("legacy"))
             put("timestamp", JsonPrimitive("2026-04-21T00:00:00.000Z"))
             put("anonymousId", JsonPrimitive("anon-1"))
-            put("sdkVersion", JsonPrimitive("0.1.0"))
+            put("sdkVersion", JsonPrimitive("0.1.1"))
             put("platform", JsonPrimitive("android"))
         }
         storage.eventsFile.writeText(legacy.toString() + "\n")
@@ -154,7 +154,7 @@ class EventQueueTest {
             externalId = null,
             properties = buildJsonObject { put("n", JsonPrimitive(n)) },
             sessionId = null,
-            sdkVersion = "0.1.0",
+            sdkVersion = "0.1.1",
             appVersion = null,
             platform = "android",
         )
@@ -169,7 +169,7 @@ class EventQueueTest {
             externalId = null,
             properties = buildJsonObject { put("n", JsonPrimitive(n)) },
             sessionId = null,
-            sdkVersion = "0.1.0",
+            sdkVersion = "0.1.1",
             appVersion = null,
             platform = "android",
         )

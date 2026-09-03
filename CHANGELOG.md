@@ -1,7 +1,12 @@
 # Changelog
 
-All notable changes to `studio.usergist:feedback` are documented here. Releases
+All notable changes to `com.usergist:feedback` are documented here. Releases
 use [Semantic Versioning](https://semver.org/).
+
+## 0.1.1
+
+- Corrected the Maven coordinate to the domain-verified `com.usergist` namespace.
+- Preserved the `studio.usergist.feedback` Kotlin package for source compatibility.
 
 ## 0.1.0
 
