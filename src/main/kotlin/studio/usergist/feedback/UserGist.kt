@@ -1353,7 +1353,9 @@ object UserGist {
             val seen = LinkedHashSet(stored.seen)
             val result = api.getJson(
                 path = Endpoints.INSTRUCTIONS,
-                query = mapOf("after" to stored.cursor.toString(), "limit" to "100"),
+                query = mapOf("after" to stored.cursor.toString(), "limit" to "100",
+                    "protocolVersion" to "2", "platform" to "android", "anonymousId" to anonymousId,
+                    "sdkVersion" to BuildConfig.SDK_VERSION),
                 deserializer = InstructionEnvelope.serializer(),
             ) ?: return@withLock
             if (result.instructions.isEmpty()) return@withLock
