@@ -1,0 +1,31 @@
+name: Public SDK validation
+run-name: SDK snapshot ${{ inputs.snapshot }}
+on:
+  workflow_dispatch:
+    inputs:
+      snapshot:
+        description: Immutable public SDK snapshot commit
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: public-sdk-${{ inputs.snapshot }}
+  cancel-in-progress: false
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: packages/sdk-android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.snapshot }}
+          persist-credentials: false
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: ./gradlew --no-daemon test lintRelease assembleRelease
