@@ -34,8 +34,8 @@ internal class InAppPresenter(
         themeOverrides = theme
     }
 
-    fun present(message: ArmedInAppMessage): Boolean {
-        val accepted = SdkModalCoordinator.enqueue(this) { release ->
+    fun present(message: ArmedInAppMessage, isValid: () -> Boolean = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)): Boolean {
+        val accepted = SdkModalCoordinator.enqueue(this, isValid) { release ->
             start(message, release)
         }
         if (!accepted) {

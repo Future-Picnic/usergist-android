@@ -34,9 +34,9 @@ internal object SurveyHost {
     private val shown = HashSet<String>()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    fun present(context: Context, presentation: SurveyPresentation): Boolean {
+    fun present(context: Context, presentation: SurveyPresentation, isValid: () -> Boolean = { true }): Boolean {
         val contextRef = WeakReference(context.applicationContext)
-        return SdkModalCoordinator.enqueue(this) { release ->
+        return SdkModalCoordinator.enqueue(this, isValid) { release ->
             val launchContext = contextRef.get() ?: return@enqueue false
             val token = UUID.randomUUID().toString()
             pending[token] = presentation
