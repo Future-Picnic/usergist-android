@@ -65,6 +65,8 @@ import studio.usergist.feedback.internal.triggers.RulesCache
 import studio.usergist.feedback.internal.triggers.SegmentEvaluator
 import studio.usergist.feedback.internal.triggers.TriggerMatcher
 import studio.usergist.feedback.internal.triggers.UserState
+import studio.usergist.feedback.internal.ui.CampaignPresentationEligibility
+import studio.usergist.feedback.internal.ui.SdkModalCoordinator
 import studio.usergist.feedback.internal.ui.PromptPresenter
 import studio.usergist.feedback.internal.ui.InAppPresenter
 import studio.usergist.feedback.internal.ui.ThemeResolver
@@ -194,6 +196,7 @@ object UserGist {
         flushBatchSize: Int = 100,
         maxQueueSize: Int = 1_000,
         triggerSyncIntervalMs: Long = 300_000,
+        presentationPaused: Boolean = false,
     ) {
         runCatching {
             doInitialize(
@@ -206,6 +209,7 @@ object UserGist {
                 flushBatchSize = flushBatchSize,
                 maxQueueSize = maxQueueSize,
                 triggerSyncIntervalMs = triggerSyncIntervalMs,
+                presentationPaused = presentationPaused,
             )
         }.onFailure { UserGistLogger.e("UserGist.initialize failed", it) }
     }
@@ -308,6 +312,12 @@ object UserGist {
         }
     }
 
+    /** Pause campaign UI without stopping analytics or dismissing an active surface. */
+    @JvmStatic fun pausePresentation() { SdkModalCoordinator.setPaused(true) }
+
+    /** Call after startup navigation and the loaded screen are ready. */
+    @JvmStatic fun resumePresentation() { SdkModalCoordinator.setPaused(false) }
+
     /**
      * Updates consent. Transport remains blocked until at least one purpose is
      * granted. Newly granted analytics or feedback consent flushes eligible
@@ -320,6 +330,7 @@ object UserGist {
             val store = consentRef.get() ?: return
             val previous = store.get()
             val next = store.set(purposes)
+            CampaignPresentationEligibility.updateConsent(next)
             if (purposes.analytics == false) {
                 queueRef.get()?.removePurpose(EventPurpose.ANALYTICS)
             }
@@ -358,6 +369,7 @@ object UserGist {
         if (!initialized.get()) return
         if (!resetInProgress.compareAndSet(false, true)) return
         resetGeneration.incrementAndGet()
+        CampaignPresentationEligibility.invalidateIdentity()
         apiRef.get()?.cancelAll()
         scope.launch {
             try {
@@ -531,6 +543,7 @@ object UserGist {
         val api = apiRef.get() ?: return
         val identity = identityRef.get()?.load() ?: return
         val context = appContextRef.get() ?: return
+        val isValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.SURVEY)
         scope.launch {
             try {
                 ensureSubjectSession()
@@ -572,7 +585,7 @@ object UserGist {
                 val presentation = surveyPresentation(survey, attempt)
                 kotlinx.coroutines.withContext(Dispatchers.Main) {
                     val activity = lifecycleRef.get()?.topActivity()
-                    if (activity == null || !SurveyHost.present(activity, presentation)) {
+                    if (activity == null || !SurveyHost.present(activity, presentation, isValid)) {
                         UserGistLogger.w("Unable to present survey $surveyId: no resumed activity")
                         releasePendingSurvey(surveyId)
                     }
@@ -923,6 +936,7 @@ object UserGist {
 
     // ---------------- Internals ----------------
 
+    @Synchronized
     private fun doInitialize(
         context: Context,
         writeKey: String,
@@ -933,6 +947,7 @@ object UserGist {
         flushBatchSize: Int,
         maxQueueSize: Int,
         triggerSyncIntervalMs: Long,
+        presentationPaused: Boolean,
     ) {
         val appCtx = context.applicationContext
         val resolvedUrl = apiUrl?.takeIf { it.isNotBlank() } ?: environment.defaultApiUrl
@@ -959,6 +974,7 @@ object UserGist {
             return
         }
 
+        SdkModalCoordinator.setPaused(presentationPaused)
         UserGistLogger.setDebug(debug)
         val storage = Storage(appCtx, writeKey)
         val secureStore = SecureStore.create(appCtx, writeKey)
@@ -979,6 +995,7 @@ object UserGist {
         secureRef.set(secureStore)
         identityRef.set(identityStore)
         consentRef.set(consentStore)
+        CampaignPresentationEligibility.updateConsent(consentStore.get())
         queueRef.set(eventQueue)
         mutationRef.set(mutationQueue)
         surveyStoreRef.set(surveyStore)
@@ -1467,9 +1484,10 @@ object UserGist {
                     )
                 ) return
                 val presenter = inAppPresenterRef.get() ?: return
+                val isValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)
                 scope.launch {
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        presenter.present(message)
+                        presenter.present(message, isValid)
                     }
                 }
             }
@@ -1566,9 +1584,10 @@ object UserGist {
                 if (message.clientSideEligible == false) continue
                 rememberLocalInstruction("inapp.show", message.messageId, event.eventId)
                 val presenter = inAppPresenterRef.get() ?: break
+                val isValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)
                 scope.launch {
                     kotlinx.coroutines.withContext(Dispatchers.Main) {
-                        presenter.present(message)
+                        presenter.present(message, isValid)
                     }
                 }
                 break
@@ -1622,10 +1641,11 @@ object UserGist {
             synchronized(pendingPromptCapIds) { pendingPromptCapIds.remove(trigger.promptId) }
             return
         }
+        val isValid = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)
         scope.launch {
             try {
                 val accepted = kotlinx.coroutines.withContext(Dispatchers.Main) {
-                    presenter.present(trigger.prompt)
+                    presenter.present(trigger.prompt, isValid)
                 }
                 if (!accepted) {
                     synchronized(pendingPromptCapIds) {
@@ -1838,6 +1858,9 @@ object UserGist {
                         }
                         subjectTokenRef.set(payload.subjectToken)
                         api.setSubjectToken(payload.subjectToken)
+                        if (identityRef.get()?.load()?.externalId != payload.externalId) {
+                            CampaignPresentationEligibility.invalidateIdentity()
+                        }
                         identityRef.get()?.update { current ->
                             current.withExternalId(payload.externalId, payload.properties)
                         }

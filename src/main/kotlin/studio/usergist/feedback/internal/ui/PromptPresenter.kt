@@ -39,8 +39,8 @@ internal class PromptPresenter(
     }
 
     /** Queues [prompt] for the next safe host-activity presentation slot. */
-    fun present(prompt: ClientPrompt): Boolean {
-        val accepted = SdkModalCoordinator.enqueue(this) { release ->
+    fun present(prompt: ClientPrompt, isValid: () -> Boolean = CampaignPresentationEligibility.validator(CampaignPresentationEligibility.Purpose.FEEDBACK)): Boolean {
+        val accepted = SdkModalCoordinator.enqueue(this, isValid) { release ->
             start(prompt, release)
         }
         if (!accepted) {

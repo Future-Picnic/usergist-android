@@ -65,7 +65,7 @@ class ApiClientTest {
         assertEquals("/v1/sdk/ingest", recorded.path)
         assertEquals("Bearer wk_abc", recorded.getHeader("Authorization"))
         assertEquals("st_test", recorded.getHeader("X-UserGist-Subject-Token"))
-        assertEquals("android/0.1.1", recorded.getHeader("X-UserGist-SDK-Version"))
+        assertEquals("android/0.1.2", recorded.getHeader("X-UserGist-SDK-Version"))
         assertEquals("android", recorded.getHeader("X-UserGist-Platform"))
         val contentType = recorded.getHeader("Content-Type") ?: ""
         assertTrue("content-type was $contentType", contentType.startsWith("application/json"))
