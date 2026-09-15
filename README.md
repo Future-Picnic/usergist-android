@@ -1,5 +1,8 @@
 # userGist Feedback SDK — Android
 
+For account IDs, backend-verified guests, token expiry, property updates, and logout, see [the identity integration guide](https://usergist.com/docs/integrations/identity). The identity lifecycle APIs require SDK **0.1.4** and the coordinated backend update; verify the installed version before copying examples into an older app.
+
+
 Production Android SDK for userGist feedback, surveys, in-app messaging,
 feature requests, analytics events, and host-compatible FCM delivery.
 
@@ -9,7 +12,7 @@ feature requests, analytics events, and host-compatible FCM delivery.
 
 ```kotlin
 dependencies {
-    implementation("com.usergist:feedback:0.1.2")
+    implementation("com.usergist:feedback:0.1.4")
 }
 ```
 

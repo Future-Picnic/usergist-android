@@ -34,4 +34,11 @@ class PropertySanitizerTest {
         assertFalse(clean.containsKey("list"))
         assertTrue(clean.size <= 100)
     }
+    @Test
+    fun profile_email_reaches_server_allowlist_without_leaking_into_events() {
+        val values = mapOf("email" to "guest@example.test", "isAnonymous" to true)
+        assertEquals(JsonPrimitive("guest@example.test"), AnyMap.toJsonObject(values, allowPii = true)!!["email"])
+        assertFalse(AnyMap.toJsonObject(values)!!.containsKey("email"))
+    }
+
 }

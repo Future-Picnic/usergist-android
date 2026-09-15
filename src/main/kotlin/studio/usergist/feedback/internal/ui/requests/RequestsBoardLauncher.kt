@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
@@ -36,6 +38,28 @@ import studio.usergist.feedback.internal.requests.RequestComment
 // by listening to `RequestsHandlers` and presenting their own UI.
 
 object RequestsBoardLauncher {
+    private const val EXTRA_GENERATION = "studio.usergist.feedback.requests.generation"
+    private val generation = java.util.concurrent.atomic.AtomicLong()
+    private val activities = java.util.WeakHashMap<RequestsBoardActivity, Long>()
+
+    internal fun attach(activity: RequestsBoardActivity): Boolean {
+        val captured = activity.intent.getLongExtra(EXTRA_GENERATION, -1L)
+        if (captured != generation.get()) return false
+        activities[activity] = captured
+        return true
+    }
+
+    internal fun detach(activity: RequestsBoardActivity) { activities.remove(activity) }
+
+    internal fun reset() {
+        val current = generation.incrementAndGet()
+        Handler(Looper.getMainLooper()).post {
+            activities.entries.toList().filter { it.value < current }.forEach { (activity, _) ->
+                activity.finish()
+                activities.remove(activity)
+            }
+        }
+    }
     private const val EXTRA_MODE = "studio.usergist.feedback.requests.mode"
     private const val EXTRA_REQUEST_ID = "studio.usergist.feedback.requests.request_id"
     internal const val MODE_BOARD = "board"
@@ -44,6 +68,7 @@ object RequestsBoardLauncher {
     fun openBoard(ctx: Context) {
         val intent = Intent(ctx, RequestsBoardActivity::class.java).apply {
             putExtra(EXTRA_MODE, MODE_BOARD)
+            putExtra(EXTRA_GENERATION, generation.get())
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         ctx.startActivity(intent)
@@ -52,6 +77,7 @@ object RequestsBoardLauncher {
     fun openDetail(ctx: Context, requestId: String) {
         val intent = Intent(ctx, RequestsBoardActivity::class.java).apply {
             putExtra(EXTRA_MODE, MODE_DETAIL)
+            putExtra(EXTRA_GENERATION, generation.get())
             putExtra(EXTRA_REQUEST_ID, requestId)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
@@ -76,6 +102,7 @@ class RequestsBoardActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!RequestsBoardLauncher.attach(this)) { finish(); return }
         val root = ScrollView(this).apply {
             setBackgroundColor(Color.rgb(250, 250, 250))
             isFillViewport = true
@@ -109,6 +136,11 @@ class RequestsBoardActivity : AppCompatActivity() {
             }
             else -> loadBoard()
         }
+    }
+
+    override fun onDestroy() {
+        RequestsBoardLauncher.detach(this)
+        super.onDestroy()
     }
 
     private fun loadBoard() {

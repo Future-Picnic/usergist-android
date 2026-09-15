@@ -53,4 +53,23 @@ class MutationQueueTest {
             root.deleteRecursively()
         }
     }
+    @Test
+    fun fresh_identity_replaces_expired_queue_entry_without_losing_guest_properties() {
+        val storage = Storage.forTest(Files.createTempDirectory("usergist-identity-queue-").toFile())
+        val queue = MutationQueue(storage, secure = null, json = json)
+        fun payload(token: String, guest: Boolean) = buildJsonObject {
+            put("subjectToken", token); put("externalId", "backend-id")
+            put("properties", buildJsonObject { put("isAnonymous", guest); if (guest) put("plan", "free") })
+        }
+        val old = queue.enqueue(MutationKind.IDENTIFY, MutationPurpose.ESSENTIAL, payload("st_expired", true), "identify:backend-id")
+        val fresh = queue.enqueue(MutationKind.IDENTIFY, MutationPurpose.ESSENTIAL, payload("st_fresh", false), "identify:backend-id")
+        assertFalse(old == fresh)
+        queue.remove(old)
+        val restored = MutationQueue(storage, secure = null, json = json)
+        assertTrue(restored.has(fresh))
+        assertTrue(restored.peek()!!.payload.toString().contains("st_fresh"))
+        assertTrue(restored.peek()!!.payload.toString().contains("free"))
+        assertTrue(restored.peek()!!.payload.toString().contains("false"))
+    }
+
 }

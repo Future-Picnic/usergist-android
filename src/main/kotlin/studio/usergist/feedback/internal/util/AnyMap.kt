@@ -20,12 +20,12 @@ import kotlinx.serialization.json.longOrNull
 internal object AnyMap {
 
     /** Coerces a user-supplied property bag into a [JsonObject]. */
-    fun toJsonObject(map: Map<String, Any?>?): JsonObject? {
+    fun toJsonObject(map: Map<String, Any?>?, allowPii: Boolean = false): JsonObject? {
         if (map == null) return null
         val entries = LinkedHashMap<String, JsonElement>(minOf(map.size, 100))
-        for ((key, value) in map.entries.take(100)) {
-            if (key.isEmpty() || key.length > 120 || isPiiKey(key)) continue
-            toEventScalar(value)?.let { entries[key] = it }
+        for ((key, value) in map.entries.take(if (allowPii) 64 else 100)) {
+            if (key.isEmpty() || key.length > 120 || key in setOf("__proto__", "prototype", "constructor") || (!allowPii && isPiiKey(key))) continue
+            toEventScalar(if (allowPii && value is String) value.take(8192) else value)?.let { entries[key] = it }
         }
         return JsonObject(entries)
     }

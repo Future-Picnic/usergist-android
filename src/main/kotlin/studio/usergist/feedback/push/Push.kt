@@ -142,8 +142,8 @@ object Push {
     /** Invalidates a token when notifications are disabled or rotated. */
     fun invalidateDeviceToken(token: String) {
         if (token.isBlank()) return
-        UserGist.invalidatePushToken(token)
         if (lastRegisteredToken == token) lastRegisteredToken = null
+        UserGist.invalidatePushToken(token)
     }
 
     /** Latest token registered with the server, or null if none yet. */

@@ -63,6 +63,9 @@ internal class ApiClient(
      */
     @Volatile
     private var subjectToken: String? = null
+    @Volatile var onAuthenticationRequired: (() -> Unit)? = null
+    @Volatile private var invalidatedAt = 0L
+    @Volatile private var invalidatedToken: String? = null
     private val subjectTokens = MutableStateFlow<String?>(null)
 
     fun setSubjectToken(token: String?) {
@@ -70,14 +73,18 @@ internal class ApiClient(
         subjectTokens.value = subjectToken
     }
 
+    private val generation = java.util.concurrent.atomic.AtomicLong(0)
+    private data class RequestGeneration(val value: Long)
     fun cancelAll() {
+        generation.incrementAndGet()
         client.dispatcher.cancelAll()
     }
 
     private suspend fun awaitSubject(requiresSubject: Boolean): Boolean {
+        val expectedGeneration = generation.get()
         if (!requiresSubject) return true
         if (subjectToken != null) return true
-        return withTimeoutOrNull(15_000) { subjectTokens.filterNotNull().first() } != null
+        return withTimeoutOrNull(15_000) { subjectTokens.filterNotNull().first() } != null && generation.get() == expectedGeneration
     }
 
     /**
@@ -259,8 +266,10 @@ internal class ApiClient(
         request: Request,
         allowRetry: Boolean = true,
     ): CallResult {
+        val expectedGeneration = request.tag(RequestGeneration::class.java)?.value ?: generation.get()
         var attempt = 0
         while (true) {
+            if (generation.get() != expectedGeneration) return CallResult(false, null, null)
             val (outcome, body, retryAfterMs) = try {
                 client.newCall(request).execute().use { response ->
                     val bodyText = runCatching { response.body?.string() }.getOrNull()
@@ -278,6 +287,7 @@ internal class ApiClient(
                 Triple(RetryPolicy.Outcome.IoError(e), null, null)
             }
 
+            if (generation.get() != expectedGeneration) return CallResult(false, null, null)
             if (outcome is RetryPolicy.Outcome.Success) {
                 return CallResult(true, 200, body)
             }
@@ -291,6 +301,13 @@ internal class ApiClient(
                     RetryPolicy.Outcome.Success -> Unit
                 }
                 val status = (outcome as? RetryPolicy.Outcome.HttpError)?.status
+                if (generation.get() != expectedGeneration) return CallResult(false, null, null)
+                val rejected = request.header("X-UserGist-Subject-Token")
+                if (status == 401 && rejected != null && rejected == subjectToken && (rejected != invalidatedToken || System.currentTimeMillis() - invalidatedAt >= 5000)) {
+                    invalidatedToken = rejected
+                    invalidatedAt = System.currentTimeMillis()
+                    onAuthenticationRequired?.invoke()
+                }
                 return CallResult(false, status, body)
             }
 
@@ -311,12 +328,13 @@ internal class ApiClient(
             stripTrailingSlash(baseUrl) + path
         }
         return Request.Builder()
+            .tag(RequestGeneration::class.java, RequestGeneration(generation.get()))
             .url(url)
             .headers(defaultHeaders(subjectTokenOverride))
     }
 
     private fun baseRequestBuilderForUrl(url: String): Request.Builder =
-        Request.Builder().url(url).headers(defaultHeaders())
+        Request.Builder().url(url).tag(RequestGeneration::class.java, RequestGeneration(generation.get())).headers(defaultHeaders())
 
     private fun defaultHeaders(subjectTokenOverride: String? = null): Headers = Headers.Builder()
         .add("Authorization", "Bearer $writeKey")

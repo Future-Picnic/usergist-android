@@ -25,6 +25,13 @@ internal class RequestsCache {
     private val store: MutableMap<String, FeatureRequest> = HashMap()
     private val listeners: MutableMap<UUID, (String, FeatureRequest) -> Unit> = HashMap()
     private val lock = Any()
+    private var generation = 0L
+
+    fun clear() = synchronized(lock) {
+        generation++
+        store.clear()
+        listeners.clear()
+    }
 
     fun upsert(req: FeatureRequest) {
         synchronized(lock) {
@@ -48,8 +55,10 @@ internal class RequestsCache {
     fun applyOptimisticVote(id: String, vote: Boolean): () -> Unit {
         val before: FeatureRequest
         val next: FeatureRequest
+        val capturedGeneration: Long
         synchronized(lock) {
             before = store[id] ?: return { }
+            capturedGeneration = generation
             val upvoteDelta = when {
                 vote && !before.viewerHasUpvoted -> 1
                 !vote && before.viewerHasUpvoted -> -1
@@ -66,7 +75,7 @@ internal class RequestsCache {
             store[id] = next
         }
         emit(id, next)
-        return rollbackTo(id, before)
+        return rollbackTo(id, before, capturedGeneration)
     }
 
     /**
@@ -76,8 +85,10 @@ internal class RequestsCache {
     fun applyOptimisticFollow(id: String, follow: Boolean): () -> Unit {
         val before: FeatureRequest
         val next: FeatureRequest
+        val capturedGeneration: Long
         synchronized(lock) {
             before = store[id] ?: return { }
+            capturedGeneration = generation
             val delta = when {
                 follow && !before.viewerIsFollowing -> 1
                 !follow && before.viewerIsFollowing -> -1
@@ -90,7 +101,7 @@ internal class RequestsCache {
             store[id] = next
         }
         emit(id, next)
-        return rollbackTo(id, before)
+        return rollbackTo(id, before, capturedGeneration)
     }
 
     fun commitVote(id: String, result: RequestVote) {
@@ -130,9 +141,12 @@ internal class RequestsCache {
         }
     }
 
-    private fun rollbackTo(id: String, snapshot: FeatureRequest): () -> Unit = {
-        synchronized(lock) { store[id] = snapshot }
-        emit(id, snapshot)
+    private fun rollbackTo(id: String, snapshot: FeatureRequest, capturedGeneration: Long): () -> Unit = rollback@{
+        synchronized(lock) {
+            if (generation != capturedGeneration) return@rollback
+            store[id] = snapshot
+            emit(id, snapshot)
+        }
     }
 
     private fun emit(id: String, req: FeatureRequest) {

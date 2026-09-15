@@ -37,6 +37,7 @@ import studio.usergist.feedback.internal.LocalInstructionDedupe
 import studio.usergist.feedback.internal.MutationKind
 import studio.usergist.feedback.internal.MutationPurpose
 import studio.usergist.feedback.internal.MutationQueue
+import studio.usergist.feedback.internal.SessionRevocations
 import studio.usergist.feedback.internal.SecureStore
 import studio.usergist.feedback.internal.UserGistLogger
 import studio.usergist.feedback.internal.Storage
@@ -95,6 +96,65 @@ object UserGist {
         val occurredAt: String = DateTime.nowIso(),
     )
 
+    data class PushSubscriptionState(val tokenAvailable: Boolean, val registered: Boolean, val optedIn: Boolean, val anonymousId: String, val externalId: String?)
+    @Volatile private var pushSubscriptionHandler: ((PushSubscriptionState) -> Unit)? = null
+    @Volatile private var pushRegistrationKey: String? = null
+    @Volatile private var pushRegisteredAt = 0L
+    private val pushRegistrationAttempt = AtomicReference<String?>(null)
+    private val pushMutationMutex = Mutex()
+    private fun pushOwnerKey(token: String) = "$anonymousId:${externalId ?: ""}:$token"
+    private fun notifyPushSubscription() {
+        val token = secureRef.get()?.read(SecureStore.Key.PUSH_TOKEN) ?: studio.usergist.feedback.push.Push.lastToken()
+        val optedIn = consentRef.get()?.get()?.push == true && !resetInProgress.get()
+        val state = PushSubscriptionState(token != null, optedIn && token != null && pushRegistrationKey == pushOwnerKey(token), optedIn, anonymousId, externalId)
+        scope.launch(Dispatchers.Main) { runCatching { pushSubscriptionHandler?.invoke(state) } }
+    }
+    @JvmStatic fun setPushSubscriptionStateHandler(handler: ((PushSubscriptionState) -> Unit)?) { pushSubscriptionHandler = handler; notifyPushSubscription() }
+    private fun retryPushRegistration() {
+        val token = secureRef.get()?.read(SecureStore.Key.PUSH_TOKEN) ?: studio.usergist.feedback.push.Push.lastToken()
+        if (token != null) registerPushTokenInternal(token, automatic = true) else notifyPushSubscription()
+    }
+
+    enum class IdentifyResult { SYNCED, QUEUED, REJECTED }
+    data class IdentityState(val status: String, val anonymousId: String, val externalId: String?)
+    @Volatile private var identityStateHandler: ((IdentityState) -> Unit)? = null
+    @Volatile private var subjectTokenProvider: (suspend (String) -> String)? = null
+    @Volatile private var identityStatus = "anonymous"
+    private var revocations: SessionRevocations? = null
+    private val resetCompletions = java.util.concurrent.CopyOnWriteArrayList<(Boolean) -> Unit>()
+    private val recoveringIdentity = AtomicBoolean(false)
+    private var lastIdentityRecovery = 0L
+    val identityState: IdentityState get() = IdentityState(identityStatus, anonymousId, externalId)
+
+    @JvmStatic fun setIdentityStateHandler(handler: ((IdentityState) -> Unit)?) {
+        identityStateHandler = handler
+        notifyIdentity(identityStatus)
+    }
+    @JvmStatic fun setSubjectTokenProvider(provider: (suspend (String) -> String)?) { subjectTokenProvider = provider }
+    private fun notifyIdentity(status: String) {
+        identityStatus = status
+        val state = identityState
+        scope.launch(Dispatchers.Main) { runCatching { identityStateHandler?.invoke(state) } }
+    }
+    private suspend fun recoverIdentity(): Boolean {
+        if (resetInProgress.get()) return false
+        notifyIdentity("authentication-required")
+        val userId = externalId ?: return false
+        val provider = subjectTokenProvider ?: return false
+        if (!recoveringIdentity.compareAndSet(false, true)) return false
+        val generation = resetGeneration.get()
+        try {
+            if (System.currentTimeMillis() - lastIdentityRecovery < 5000) return false
+            lastIdentityRecovery = System.currentTimeMillis()
+            val token = kotlinx.coroutines.withTimeout(30_000) { provider(userId) }
+            if (resetInProgress.get() || generation != resetGeneration.get() || externalId != userId) return false
+            return identifyAsync(userId, token) == IdentifyResult.SYNCED
+        } catch (error: Throwable) {
+            UserGistLogger.w("Subject token refresh failed", error)
+            return false
+        } finally { recoveringIdentity.set(false) }
+    }
+
     // ---------------- Callbacks ----------------
 
     /** Invoked on the main thread when a prompt is shown. */
@@ -143,7 +203,10 @@ object UserGist {
     private val surveyStoreRef: AtomicReference<SurveyStore?> = AtomicReference(null)
     private val localInstructionDedupeRef: AtomicReference<LocalInstructionDedupe?> =
         AtomicReference(null)
-    private val subjectSessionMutex = Mutex()
+    private val identityBoundaryLock = Any()
+    private val subjectSessionMutex = AtomicReference(Mutex())
+    private val resetRunning = AtomicBoolean(false)
+    private var pendingReset: Pair<String?, String>? = null
     private val instructionMutex = Mutex()
     private val mutationMutex = Mutex()
     private val surveyCooldownByCampaign = HashMap<String, Long>()
@@ -224,44 +287,71 @@ object UserGist {
         userId: String,
         subjectToken: String,
         properties: Map<String, Any?>? = null,
+        completion: ((IdentifyResult) -> Unit)? = null,
     ) {
-        if (!initialized.get()) return
-        if (userId.isBlank()) {
-            UserGistLogger.w("UserGist.identify: userId is blank")
-            return
-        }
-        if (!subjectToken.startsWith("st_")) {
-            UserGistLogger.w("UserGist.identify requires a server-minted subject token")
-            return
-        }
-        val props = if (consentRef.get()?.get()?.analytics == true) {
-            AnyMap.toJsonObject(properties)
-        } else {
-            null
-        }
-        val identity = identityRef.get() ?: return
-        val mutations = mutationRef.get() ?: return
+        val generation = resetGeneration.get()
         scope.launch {
-            val payload = SdkIdentifyMutation(
-                subjectToken = subjectToken,
-                anonymousId = identity.load().anonymousId,
-                externalId = userId,
-                properties = props,
-            )
-            val id = mutations.enqueue(
-                kind = MutationKind.IDENTIFY,
-                purpose = MutationPurpose.ESSENTIAL,
-                payload = json.encodeToJsonElement(
-                    SdkIdentifyMutation.serializer(),
-                    payload,
-                ).jsonObject,
-                dedupeKey = "identify:$userId",
-            )
-            flushMutations()
-            if (mutations.has(id)) {
-                UserGistLogger.w("UserGist.identify stored locally and pending retry")
-            }
+            val result = if (generation != resetGeneration.get()) IdentifyResult.REJECTED
+                else identifyAsync(userId, subjectToken, properties)
+            kotlinx.coroutines.withContext(Dispatchers.Main) { completion?.invoke(result) }
         }
+    }
+
+    /** Returns server confirmation or durable queue acceptance; never hides a rejection. */
+    @JvmStatic
+    suspend fun identifyAsync(userId: String, subjectToken: String, properties: Map<String, Any?>? = null): IdentifyResult {
+        if (!initialized.get() || resetInProgress.get() || userId.isBlank() || !subjectToken.startsWith("st_")) return IdentifyResult.REJECTED
+        val identity = identityRef.get() ?: return IdentifyResult.REJECTED
+        val mutations = mutationRef.get() ?: return IdentifyResult.REJECTED
+        val pending = mutations.peek()?.takeIf { it.kind == MutationKind.IDENTIFY }
+            ?.payload?.get("externalId") as? JsonPrimitive
+        if ((externalId != null && externalId != userId) || (pending != null && pending.content != userId)) {
+            UserGistLogger.w("identify rejected: await reset before switching users")
+            return IdentifyResult.REJECTED
+        }
+        val generation = resetGeneration.get()
+        return try {
+            val props = if (consentRef.get()?.get()?.analytics == true) AnyMap.toJsonObject(properties, allowPii = true) else null
+            val payload = SdkIdentifyMutation(subjectToken, identity.load().anonymousId, userId, props)
+            val id = mutations.enqueue(MutationKind.IDENTIFY, MutationPurpose.ESSENTIAL,
+                json.encodeToJsonElement(SdkIdentifyMutation.serializer(), payload).jsonObject, "identify:$userId")
+            notifyIdentity("identifying")
+            if (subjectTokenRef.get() == null && externalId == null) {
+                try { ensureSubjectSession() } catch (_: Throwable) { return IdentifyResult.QUEUED }
+            }
+            val result = flushMutations()
+            when {
+                generation != resetGeneration.get() || resetInProgress.get() -> IdentifyResult.REJECTED
+                id in result.permanentlyRejectedIds -> IdentifyResult.REJECTED
+                mutations.has(id) -> IdentifyResult.QUEUED
+                else -> IdentifyResult.SYNCED
+            }
+        } catch (error: Throwable) {
+            UserGistLogger.w("identify failed", error)
+            IdentifyResult.REJECTED
+        }
+    }
+
+    @JvmStatic
+    suspend fun setUserProperties(properties: Map<String, Any?>, unset: List<String> = emptyList()): IdentifyResult {
+        if (resetInProgress.get() || consentRef.get()?.get()?.analytics != true ||
+            (properties.isEmpty() && unset.isEmpty()) || unset.any { properties.containsKey(it) }) return IdentifyResult.REJECTED
+        val generation = resetGeneration.get()
+        val mutations = mutationRef.get() ?: return IdentifyResult.REJECTED
+        return try {
+            val payload = JsonObject(mapOf("anonymousId" to JsonPrimitive(anonymousId),
+                "mutationId" to JsonPrimitive(UUID.randomUUID().toString()),
+                "set" to (AnyMap.toJsonObject(properties, allowPii = true) ?: JsonObject(emptyMap())),
+                "unset" to JsonArray(unset.map { JsonPrimitive(it) })))
+            val id = mutations.enqueue(MutationKind.USER_PROPERTIES, MutationPurpose.ANALYTICS, payload)
+            val result = flushMutations()
+            when {
+                generation != resetGeneration.get() || resetInProgress.get() -> IdentifyResult.REJECTED
+                id in result.permanentlyRejectedIds -> IdentifyResult.REJECTED
+                mutations.has(id) -> IdentifyResult.QUEUED
+                else -> IdentifyResult.SYNCED
+            }
+        } catch (error: Throwable) { UserGistLogger.w("setUserProperties failed", error); IdentifyResult.REJECTED }
     }
 
     /**
@@ -280,6 +370,7 @@ object UserGist {
         purpose: EventPurpose,
     ) {
         if (!initialized.get()) return
+        if (resetInProgress.get()) return
         if (eventName.isBlank()) {
             UserGistLogger.w("UserGist.track: eventName is blank")
             return
@@ -297,8 +388,10 @@ object UserGist {
             platform = Config.SDK_PLATFORM,
             purpose = purpose,
         )
+        val eventGeneration = resetGeneration.get()
         scope.launch {
             try {
+                if (resetInProgress.get() || eventGeneration != resetGeneration.get()) return@launch
                 val queue = queueRef.get() ?: return@launch
                 queue.enqueue(event)
                 UserGistLogger.d("UserGist.track enqueued '$eventName' (queue=${queue.size()})")
@@ -325,7 +418,7 @@ object UserGist {
      */
     @JvmStatic
     fun setConsent(purposes: Consent) {
-        if (!initialized.get()) return
+        if (!initialized.get() || resetInProgress.get()) return
         try {
             val store = consentRef.get() ?: return
             val previous = store.get()
@@ -333,6 +426,7 @@ object UserGist {
             CampaignPresentationEligibility.updateConsent(next)
             if (purposes.analytics == false) {
                 queueRef.get()?.removePurpose(EventPurpose.ANALYTICS)
+                mutationRef.get()?.removePurpose(MutationPurpose.ANALYTICS)
             }
             if (purposes.feedback == false) {
                 queueRef.get()?.removePurpose(EventPurpose.FEEDBACK)
@@ -345,6 +439,7 @@ object UserGist {
             }
             UserGistLogger.d("UserGist.setConsent: $next")
             enqueueConsentServer(next)
+            retryPushRegistration()
             if ((previous.analytics != true && next.analytics == true) ||
                 (previous.feedback != true && next.feedback == true)
             ) {
@@ -365,23 +460,27 @@ object UserGist {
 
     /** Revokes the subject session and clears all user-scoped local state. */
     @JvmStatic
-    fun reset() {
-        if (!initialized.get()) return
-        if (!resetInProgress.compareAndSet(false, true)) return
+    @JvmOverloads
+    fun reset(completion: ((Boolean) -> Unit)? = null) {
+        if (!initialized.get()) { completion?.invoke(true); return }
+        if (completion != null) resetCompletions.add(completion)
+        if (!resetRunning.compareAndSet(false, true)) return
+        resetInProgress.set(true)
+        requestsCache.clear()
+        studio.usergist.feedback.internal.ui.requests.RequestsBoardLauncher.reset()
         resetGeneration.incrementAndGet()
+        subjectSessionMutex.set(Mutex())
+        notifyIdentity("resetting")
         CampaignPresentationEligibility.invalidateIdentity()
         apiRef.get()?.cancelAll()
+        apiRef.get()?.setSubjectToken(null)
         scope.launch {
+            var success = false
             try {
-                subjectSessionMutex.withLock {
-                    mutationMutex.withLock {
-                        if (subjectTokenRef.get() != null) {
-                            apiRef.get()?.postJson(
-                                path = Endpoints.SESSION_REVOKE,
-                                body = EmptyPayload(),
-                                serializer = EmptyPayload.serializer(),
-                            )
-                        }
+                mutationMutex.withLock {
+                    synchronized(identityBoundaryLock) {
+                        val source = pendingReset ?: Pair(subjectTokenRef.get() ?: secureRef.get()?.read(SecureStore.Key.SUBJECT_TOKEN), anonymousId).also { pendingReset = it }
+                        revocations?.remember(source.first, source.second)
                         identityRef.get()?.reset()
                         queueRef.get()?.clear()
                         mutationRef.get()?.clear()
@@ -396,9 +495,12 @@ object UserGist {
                         storageRef.get()?.let { it.delete(it.instructionStateFile) }
                         localInstructionDedupeRef.get()?.clear()
                         storageRef.get()?.let { it.delete(it.userStateFile) }
-                        secureRef.get()?.delete(SecureStore.Key.SUBJECT_TOKEN)
+                        check(secureRef.get()?.delete(SecureStore.Key.SUBJECT_TOKEN) == true) { "Unable to clear subject credential" }
                         subjectTokenRef.set(null)
+                        pushRegistrationKey = null
+                        pushRegistrationAttempt.set(null)
                         studio.usergist.feedback.push.Push.reset()
+                        notifyPushSubscription()
                         synchronized(surveyCooldownByCampaign) {
                             surveyCooldownByCampaign.clear()
                         }
@@ -407,17 +509,29 @@ object UserGist {
                         synchronized(userStateLock) { eventHistory.clear() }
                         synchronized(appOpenLock) { appOpenPending = false }
                         apiRef.get()?.setSubjectToken(null)
+                        pendingReset = null
                     }
                 }
-                ensureSubjectSession(allowDuringReset = true)
+                success = true
                 UserGistLogger.d("UserGist.reset complete")
             } catch (e: Throwable) {
                 UserGistLogger.w("UserGist.reset failed", e)
             } finally {
-                resetInProgress.set(false)
+                resetInProgress.set(!success)
+                resetRunning.set(false)
+                notifyIdentity(if (success) "anonymous" else "reset-failed")
+                val callbacks = resetCompletions.toList()
+                resetCompletions.removeAll(callbacks.toSet())
+                kotlinx.coroutines.withContext(Dispatchers.Main) { callbacks.forEach { it(success) } }
+                if (success) scope.launch { revocations?.drain(); ensureSubjectSession() }
             }
         }
     }
+
+    @JvmStatic suspend fun resetAsync(): Boolean =
+        kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+            reset { if (continuation.isActive) continuation.resumeWith(Result.success(it)) }
+        }
 
     /** Applies host-app theme overrides used when rendering prompts. */
     @JvmStatic
@@ -436,6 +550,8 @@ object UserGist {
     /** Eagerly flushes any queued events. No-op if consent blocks transport. */
     @JvmStatic
     fun flush() {
+        retryPushRegistration()
+        scope.launch { revocations?.drain() }
         if (!initialized.get()) return
         flushAsync()
     }
@@ -704,56 +820,82 @@ object UserGist {
 
     /** Internal: register an FCM token with the control plane. */
     @JvmStatic
-    internal fun registerPushToken(token: String) {
-        if (!initialized.get() || token.isBlank()) return
+    internal fun registerPushToken(token: String) = registerPushTokenInternal(token, automatic = false)
+
+    private fun registerPushTokenInternal(token: String, automatic: Boolean) {
+        if (!initialized.get() || token.isBlank() || resetInProgress.get()) return
+        val generation = resetGeneration.get()
         scope.launch {
-            try {
-                // A fresh install can receive its first Firebase token while
-                // the anonymous subject session is still being established.
-                // Session recovery may rotate the installation identity, so
-                // resolve the identity only after that work has completed.
-                ensureSubjectSession()
-                val api = apiRef.get() ?: return@launch
-                val consent = consentRef.get()?.get() ?: return@launch
-                if (!consent.allowsPush) {
-                    UserGistLogger.d("push register skipped: consent not granted")
-                    return@launch
-                }
-                val identity = identityRef.get()?.load() ?: return@launch
-                val context = appContextRef.get()
-                val appVersion = try {
-                    context?.packageManager?.getPackageInfo(context.packageName, 0)?.versionName
-                } catch (_: Throwable) {
-                    null
-                }
-                val payload = SdkRegisterTokenPayload(
-                    anonymousId = identity.anonymousId,
-                    externalId = identity.externalId,
-                    token = token,
-                    platform = "android",
-                    environment = if (configRef.get()?.environment == Environment.PRODUCTION) {
-                        "production"
+            pushMutationMutex.withLock {
+                if (resetInProgress.get() || generation != resetGeneration.get()) return@launch
+                var attempt: String? = null
+                try {
+                    val secure = secureRef.get() ?: return@launch
+                    if (automatic && (secure.read(SecureStore.Key.PUSH_TOKEN) ?: studio.usergist.feedback.push.Push.lastToken()) != token) return@launch
+                    if (secure.read(SecureStore.Key.PUSH_TOKEN) != token && !secure.write(SecureStore.Key.PUSH_TOKEN, token)) return@launch
+                    // A fresh install can receive its first Firebase token while
+                    // the anonymous subject session is still being established.
+                    // Session recovery may rotate the installation identity, so
+                    // resolve the identity only after that work has completed.
+                    ensureSubjectSession()
+                    if (resetInProgress.get() || generation != resetGeneration.get()) return@launch
+                    val api = apiRef.get() ?: return@launch
+                    val consent = consentRef.get()?.get() ?: return@launch
+                    if (!consent.allowsPush) {
+                        notifyPushSubscription()
+                        UserGistLogger.d("push register skipped: consent not granted")
+                        return@launch
+                    }
+                    val identity = identityRef.get()?.load() ?: return@launch
+                    val context = appContextRef.get()
+                    val appVersion = try {
+                        context?.packageManager?.getPackageInfo(context.packageName, 0)?.versionName
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    revocations?.drain()
+                    if (revocations?.isPending() == true || resetInProgress.get() || generation != resetGeneration.get()) return@launch
+                    val key = pushOwnerKey(token)
+                    if (pushRegistrationKey == key && System.currentTimeMillis() - pushRegisteredAt < 86_400_000) return@launch
+                    if (!pushRegistrationAttempt.compareAndSet(null, key)) return@launch
+                    attempt = key
+                    val payload = SdkRegisterTokenPayload(
+                        anonymousId = identity.anonymousId,
+                        externalId = identity.externalId,
+                        token = token,
+                        platform = "android",
+                        environment = if (configRef.get()?.environment == Environment.PRODUCTION) {
+                            "production"
+                        } else {
+                            "sandbox"
+                        },
+                        language = java.util.Locale.getDefault().toLanguageTag(),
+                        timezone = java.util.TimeZone.getDefault().id,
+                        appVersion = appVersion,
+                        sdkVersion = Config.SDK_VERSION,
+                        optIn = true,
+                    )
+                    val registration = api.postJsonDetailed(
+                        path = Endpoints.PUSH_REGISTER_TOKEN,
+                        body = payload,
+                        serializer = SdkRegisterTokenPayload.serializer(),
+                    )
+                    if (secure.read(SecureStore.Key.PUSH_TOKEN) != token) return@launch
+                    if (resetInProgress.get() || generation != resetGeneration.get() || key != pushOwnerKey(token) || consentRef.get()?.get()?.push != true) return@launch
+                    val acknowledged = runCatching { json.parseToJsonElement(registration.body ?: "{}").jsonObject["data"]?.jsonObject?.get("registered") == JsonPrimitive(true) }.getOrDefault(false)
+                    if (registration.success && acknowledged) {
+                        pushRegistrationKey = key
+                        pushRegisteredAt = System.currentTimeMillis()
+                        UserGistLogger.d("UserGist.registerPushToken complete")
                     } else {
-                        "sandbox"
-                    },
-                    language = java.util.Locale.getDefault().toLanguageTag(),
-                    timezone = java.util.TimeZone.getDefault().id,
-                    appVersion = appVersion,
-                    sdkVersion = Config.SDK_VERSION,
-                    optIn = true,
-                )
-                val registered = api.postJson(
-                    path = Endpoints.PUSH_REGISTER_TOKEN,
-                    body = payload,
-                    serializer = SdkRegisterTokenPayload.serializer(),
-                )
-                if (registered) {
-                    UserGistLogger.d("UserGist.registerPushToken complete")
-                } else {
-                    UserGistLogger.w("UserGist.registerPushToken did not reach the control plane")
+                        UserGistLogger.w("UserGist.registerPushToken did not reach the control plane")
+                    }
+                    notifyPushSubscription()
+                } catch (e: Throwable) {
+                    UserGistLogger.w("UserGist.registerPushToken failed", e)
+                } finally {
+                    if (attempt != null) pushRegistrationAttempt.compareAndSet(attempt, null)
                 }
-            } catch (e: Throwable) {
-                UserGistLogger.w("UserGist.registerPushToken failed", e)
             }
         }
     }
@@ -762,14 +904,25 @@ object UserGist {
     @JvmStatic
     internal fun invalidatePushToken(token: String) {
         if (!initialized.get() || token.isBlank()) return
-        val api = apiRef.get() ?: return
-        val identity = identityRef.get()?.load() ?: return
+        val generation = resetGeneration.get()
         scope.launch {
-            api.postJson(
-                path = Endpoints.PUSH_INVALIDATE_TOKEN,
-                body = SdkInvalidateTokenPayload(identity.anonymousId, token),
-                serializer = SdkInvalidateTokenPayload.serializer(),
-            )
+            pushMutationMutex.withLock {
+                if (resetInProgress.get() || generation != resetGeneration.get()) return@launch
+                val secure = secureRef.get() ?: return@launch
+                val api = apiRef.get() ?: return@launch
+                val identity = identityRef.get()?.load() ?: return@launch
+                if (secure.read(SecureStore.Key.PUSH_TOKEN) == token && !secure.delete(SecureStore.Key.PUSH_TOKEN)) return@launch
+                if (pushRegistrationKey == pushOwnerKey(token)) {
+                    pushRegistrationKey = null
+                    pushRegisteredAt = 0L
+                }
+                notifyPushSubscription()
+                api.postJson(
+                    path = Endpoints.PUSH_INVALIDATE_TOKEN,
+                    body = SdkInvalidateTokenPayload(identity.anonymousId, token),
+                    serializer = SdkInvalidateTokenPayload.serializer(),
+                )
+            }
         }
     }
 
@@ -1005,6 +1158,9 @@ object UserGist {
         capsRef.set(capStore)
         matcherRef.set(matcher)
         apiRef.set(apiClient)
+        revocations = SessionRevocations(secureStore, apiClient, json)
+        scope.launch { revocations?.drain() }
+        apiClient.onAuthenticationRequired = { scope.launch { if (recoverIdentity()) flush() } }
 
         val app = appCtx as? Application
         if (app != null) {
@@ -1133,7 +1289,7 @@ object UserGist {
             throw kotlinx.coroutines.CancellationException("UserGist reset in progress")
         }
         if (subjectTokenRef.get() != null) return
-        subjectSessionMutex.withLock {
+        subjectSessionMutex.get().withLock {
             ensureCurrentGeneration(generation, allowDuringReset)
             if (subjectTokenRef.get() != null) return
             val api = apiRef.get() ?: return
@@ -1153,6 +1309,10 @@ object UserGist {
             ensureCurrentGeneration(generation, allowDuringReset)
             var session = firstAttempt.value
             val mayRotate = firstAttempt.call.status in setOf(401, 403, 409)
+            if (session == null && identity.load().externalId != null) {
+                recoverIdentity()
+                return@withLock
+            }
             if (session == null && mayRotate) {
                 if (persisted != null) secure.delete(SecureStore.Key.SUBJECT_TOKEN)
                 api.setSubjectToken(null)
@@ -1172,6 +1332,8 @@ object UserGist {
                 api.setSubjectToken(null)
                 throw IllegalStateException("Unable to establish UserGist subject session")
             }
+            synchronized(identityBoundaryLock) {
+                ensureCurrentGeneration(generation, allowDuringReset)
             if (!secure.write(SecureStore.Key.SUBJECT_TOKEN, token)) {
                 api.setSubjectToken(null)
                 throw IllegalStateException("Unable to persist UserGist subject session")
@@ -1179,6 +1341,9 @@ object UserGist {
             ensureCurrentGeneration(generation, allowDuringReset)
             subjectTokenRef.set(token)
             api.setSubjectToken(token)
+            notifyIdentity(if (externalId == null) "anonymous" else "identified")
+            retryPushRegistration()
+            }
         }
     }
 
@@ -1279,7 +1444,11 @@ object UserGist {
     }
 
     private suspend fun flushOnce() {
+        if (resetInProgress.get()) return
+        val generation = resetGeneration.get()
         ensureSubjectSession()
+        if (resetInProgress.get() || generation != resetGeneration.get()) return
+        retryPushRegistration()
         flushMutations()
         val consent = consentRef.get()?.get() ?: return
         if (consent.analytics != true && consent.feedback != true) return
@@ -1292,6 +1461,7 @@ object UserGist {
         val acknowledgedIds = LinkedHashSet<String>()
         try {
             while (pending.isNotEmpty()) {
+                if (resetInProgress.get() || generation != resetGeneration.get()) return
                 val allowed = pending.filter { event ->
                     if (event.purpose == EventPurpose.ANALYTICS) {
                         consent.analytics == true
@@ -1314,6 +1484,7 @@ object UserGist {
                     body = IngestBatch(events = events.map { it.toWire() }, context = context),
                     serializer = IngestBatch.serializer(),
                 )
+                if (resetInProgress.get() || generation != resetGeneration.get()) return
                 if (result.success) {
                     val sentIds = events.mapTo(HashSet()) { it.eventId }
                     acknowledgedIds += sentIds
@@ -1321,7 +1492,7 @@ object UserGist {
                     UserGistLogger.d("UserGist.flush sent ${events.size} events")
                 } else {
                     val permanent = result.status != null &&
-                        result.status in 400..499 && result.status != 429
+                        result.status in 400..499 && result.status != 429 && result.status != 401
                     if (permanent) {
                         if (events.size == 1) {
                             acknowledgedIds += first.eventId
@@ -1336,8 +1507,9 @@ object UserGist {
                             body = IngestBatch(events = listOf(first.toWire()), context = context),
                             serializer = IngestBatch.serializer(),
                         )
+                        if (resetInProgress.get() || generation != resetGeneration.get()) return
                         val singlePermanent = single.status != null &&
-                            single.status in 400..499 && single.status != 429
+                            single.status in 400..499 && single.status != 429 && single.status != 401
                         if (single.success || singlePermanent) {
                             acknowledgedIds += first.eventId
                             pending.removeAll { it.eventId == first.eventId }
@@ -1821,8 +1993,21 @@ object UserGist {
             }
             val mutation = mutations.peek() ?: break
             val consent = consentRef.get()?.get() ?: Consent()
+            if (mutation.purpose == MutationPurpose.ANALYTICS && consent.analytics != true) break
             if (mutation.purpose == MutationPurpose.FEEDBACK && consent.feedback != true) break
             if (mutation.purpose == MutationPurpose.SURVEY && consent.survey != true) break
+            if (consent.analytics == true && (mutation.kind == MutationKind.IDENTIFY || mutation.kind == MutationKind.USER_PROPERTIES)) {
+                val current = identityRef.get()?.load() ?: break
+                val credential = if (current.externalId != null && mutation.kind == MutationKind.IDENTIFY)
+                    (mutation.payload["subjectToken"] as? JsonPrimitive)?.content else null
+                val consentResult = api.postJsonDetailed(Endpoints.CONSENT,
+                    SdkConsentPayload(current.anonymousId, current.externalId,
+                        SdkConsentPayload.Purposes(consent.analytics == true, consent.feedback == true, consent.push == true, consent.survey == true),
+                        consentRef.get()?.version() ?: 0, consentRef.get()?.updatedAt() ?: DateTime.nowIso()),
+                    SdkConsentPayload.serializer(), subjectTokenOverride = credential)
+                if (!consentResult.success || resetInProgress.get() || resetGeneration.get() != generation) break
+                if (mutation.kind == MutationKind.USER_PROPERTIES && consentRef.get()?.get()?.analytics != true) continue
+            }
             val result = when (mutation.kind) {
                 MutationKind.IDENTIFY -> {
                     val payload = runCatching {
@@ -1840,7 +2025,8 @@ object UserGist {
                         body = SdkIdentifyPayload(
                             anonymousId = payload.anonymousId,
                             externalId = payload.externalId,
-                            properties = payload.properties,
+                            properties = if (consentRef.get()?.get()?.analytics == true) payload.properties else null,
+                            previousSubjectToken = subjectTokenRef.get(),
                         ),
                         serializer = SdkIdentifyPayload.serializer(),
                         subjectTokenOverride = payload.subjectToken,
@@ -1849,22 +2035,30 @@ object UserGist {
                         return@withLock MutationFlushResult(rejected)
                     }
                     if (call.success) {
+                        val accepted = runCatching { json.parseToJsonElement(call.body ?: "{}").jsonObject["data"]?.jsonObject }.getOrNull()
+                        val sessionToken = (accepted?.get("subjectToken") as? JsonPrimitive)?.content ?: payload.subjectToken
                         val persisted = secureRef.get()?.write(
                             SecureStore.Key.SUBJECT_TOKEN,
-                            payload.subjectToken,
+                            sessionToken,
                         ) == true
                         if (!persisted) {
                             break
                         }
-                        subjectTokenRef.set(payload.subjectToken)
-                        api.setSubjectToken(payload.subjectToken)
+                        subjectTokenRef.set(sessionToken)
+                        api.setSubjectToken(sessionToken)
                         if (identityRef.get()?.load()?.externalId != payload.externalId) {
                             CampaignPresentationEligibility.invalidateIdentity()
                         }
                         identityRef.get()?.update { current ->
-                            current.withExternalId(payload.externalId, payload.properties)
+                            val filtered = (accepted?.get("filteredKeys") as? JsonArray)?.map { (it as JsonPrimitive).content }
+                            val clean = if (filtered != null) payload.properties?.let { JsonObject(it.filterKeys { key -> key !in filtered }) }
+                                else AnyMap.toJsonObject(AnyMap.fromJsonObject(payload.properties))
+                            val profile = accepted?.get("properties") as? JsonObject
+                            if (profile != null) current.copy(externalId = payload.externalId, userProperties = profile)
+                            else current.withExternalId(payload.externalId, clean)
                         }
-                        studio.usergist.feedback.push.Push.rebind(payload.externalId)
+                        notifyIdentity("identified")
+                        retryPushRegistration()
                         if (consent.analytics == true) {
                             trackWithPurpose(
                                 "\$identify",
@@ -1872,6 +2066,20 @@ object UserGist {
                                 EventPurpose.ANALYTICS,
                             )
                         }
+                    }
+                    call
+                }
+                MutationKind.USER_PROPERTIES -> {
+                    val call = api.postJsonDetailed(path = "/v1/sdk/user-properties", body = mutation.payload,
+                        serializer = JsonObject.serializer())
+                    if (resetInProgress.get() || resetGeneration.get() != generation) return@withLock MutationFlushResult(rejected)
+                    if (call.success) {
+                        val response = runCatching { json.parseToJsonElement(call.body ?: "{}").jsonObject["data"]?.jsonObject }.getOrNull()
+                        val filtered = (response?.get("filteredKeys") as? JsonArray)?.map { (it as JsonPrimitive).content } ?: emptyList()
+                        val set = (mutation.payload["set"] as? JsonObject ?: JsonObject(emptyMap())).filterKeys { it !in filtered }
+                        val unset = (mutation.payload["unset"] as? JsonArray)?.map { (it as JsonPrimitive).content } ?: emptyList()
+                        identityRef.get()?.update { current -> current.copy(userProperties = JsonObject(
+                            ((current.userProperties ?: JsonObject(emptyMap())) + set).filterKeys { it !in unset })) }
                     }
                     call
                 }
@@ -1922,11 +2130,13 @@ object UserGist {
                 mutations.remove(mutation.id)
                 continue
             }
+            if (result.status == 401 && mutation.kind == MutationKind.IDENTIFY) notifyIdentity("authentication-required")
             val permanent = result.status != null &&
-                result.status in 400..499 && result.status != 429
+                result.status in 400..499 && result.status != 429 && result.status != 401
             if (permanent) {
                 mutations.remove(mutation.id)
                 rejected += mutation.id
+                if (mutation.kind == MutationKind.IDENTIFY) notifyIdentity("rejected")
                 UserGistLogger.w("Quarantined permanently rejected ${mutation.kind} mutation")
                 continue
             }
@@ -1939,6 +2149,7 @@ object UserGist {
 
     @kotlinx.serialization.Serializable
     internal data class SdkIdentifyPayload(
+        val previousSubjectToken: String? = null,
         val anonymousId: String,
         val externalId: String,
         val properties: JsonObject? = null,

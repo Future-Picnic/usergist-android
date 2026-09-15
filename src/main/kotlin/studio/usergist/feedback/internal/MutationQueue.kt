@@ -11,6 +11,7 @@ import java.util.UUID
 @Serializable
 internal enum class MutationKind {
     @SerialName("identify") IDENTIFY,
+    @SerialName("user-properties") USER_PROPERTIES,
     @SerialName("feedback-response") FEEDBACK_RESPONSE,
     @SerialName("survey-complete") SURVEY_COMPLETE,
     @SerialName("survey-abandon") SURVEY_ABANDON,
@@ -19,6 +20,7 @@ internal enum class MutationKind {
 @Serializable
 internal enum class MutationPurpose {
     @SerialName("essential") ESSENTIAL,
+    @SerialName("analytics") ANALYTICS,
     @SerialName("feedback") FEEDBACK,
     @SerialName("survey") SURVEY,
 }
@@ -59,18 +61,23 @@ internal class MutationQueue(
         dedupeKey: String? = null,
     ): String = synchronized(lock) {
         val existing = dedupeKey?.let { key -> items.firstOrNull { it.dedupeKey == key } }
-        if (existing != null) return@synchronized existing.id
+        if (existing != null && kind != MutationKind.IDENTIFY) return@synchronized existing.id
         val next = PendingMutation(
             id = UUID.randomUUID().toString(),
             kind = kind,
             purpose = purpose,
-            payload = payload,
+            payload = if (existing == null) payload else JsonObject(payload + ("properties" to JsonObject(
+                (existing.payload["properties"] as? JsonObject ?: JsonObject(emptyMap())) +
+                    (payload["properties"] as? JsonObject ?: JsonObject(emptyMap())),
+            ))),
             createdAt = DateTime.nowIso(),
             dedupeKey = dedupeKey,
         )
         val previous = items
         try {
-            items = if (purpose == MutationPurpose.ESSENTIAL) {
+            items = if (existing != null) {
+                items.map { if (it.id == existing.id) next else it }
+            } else if (purpose == MutationPurpose.ESSENTIAL) {
                 listOf(next) + items
             } else {
                 items + next

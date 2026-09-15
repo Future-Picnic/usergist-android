@@ -65,7 +65,7 @@ class ApiClientTest {
         assertEquals("/v1/sdk/ingest", recorded.path)
         assertEquals("Bearer wk_abc", recorded.getHeader("Authorization"))
         assertEquals("st_test", recorded.getHeader("X-UserGist-Subject-Token"))
-        assertEquals("android/0.1.2", recorded.getHeader("X-UserGist-SDK-Version"))
+        assertEquals("android/0.1.4", recorded.getHeader("X-UserGist-SDK-Version"))
         assertEquals("android", recorded.getHeader("X-UserGist-Platform"))
         val contentType = recorded.getHeader("Content-Type") ?: ""
         assertTrue("content-type was $contentType", contentType.startsWith("application/json"))
@@ -174,6 +174,19 @@ class ApiClientTest {
 
         assertEquals(null, response)
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun expired_active_credential_notifies_once_without_treating_another_identity_proof_as_active() = runTest {
+        repeat(3) { server.enqueue(MockResponse().setResponseCode(401)) }
+        val client = ApiClient(server.url("/").toString().trimEnd('/'), "wk_test", json, policy = RetryPolicy(maxAttempts = 1))
+        var invalidations = 0
+        client.onAuthenticationRequired = { invalidations++ }
+        client.setSubjectToken("st_current")
+        repeat(2) { assertEquals(401, client.postJsonDetailed("/test", Payload("x", 1), Payload.serializer()).status) }
+        assertEquals(1, invalidations)
+        client.postJsonDetailed("/identify", Payload("x", 1), Payload.serializer(), subjectTokenOverride = "st_invalid_other_proof")
+        assertEquals(1, invalidations)
     }
 
     @Test

@@ -26,6 +26,7 @@ internal class SecureStore private constructor(
         CONSENT("consent"),
         PUSH_TOKEN("push_token"),
         SUBJECT_TOKEN("subject_token"),
+        SESSION_REVOCATIONS("session_revocations"),
         MUTATION_QUEUE("mutation_queue"),
     }
 
@@ -115,6 +116,7 @@ private val SecureStore.Key.requiresSecureStorage: Boolean
     get() = when (this) {
         SecureStore.Key.PUSH_TOKEN,
         SecureStore.Key.SUBJECT_TOKEN,
+        SecureStore.Key.SESSION_REVOCATIONS,
         SecureStore.Key.MUTATION_QUEUE,
         -> true
         SecureStore.Key.IDENTITY,

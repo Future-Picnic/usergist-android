@@ -33,7 +33,7 @@ internal data class Identity(
     fun withExternalId(newExternalId: String?, newProperties: JsonObject?): Identity =
         copy(
             externalId = newExternalId ?: externalId,
-            userProperties = newProperties ?: userProperties,
+            userProperties = newProperties?.let { JsonObject((userProperties ?: JsonObject(emptyMap())) + it) } ?: userProperties,
         )
 }
 
@@ -108,15 +108,10 @@ internal class IdentityStore(
     }
 
     private fun persist(identity: Identity) {
-        val text = try {
-            json.encodeToString(identity)
-        } catch (e: Throwable) {
-            UserGistLogger.w("IdentityStore.persist encode failed", e)
-            return
-        }
-        // Encrypted store preferred; plaintext fallback if it's unavailable.
-        val wroteSecure = secure?.write(SecureStore.Key.IDENTITY, text) ?: false
-        if (!wroteSecure) {
+        val text = json.encodeToString(identity)
+        if (secure != null) {
+            check(secure.write(SecureStore.Key.IDENTITY, text)) { "Unable to persist identity securely" }
+        } else {
             storage.writeText(storage.identityFile, text)
         }
     }
