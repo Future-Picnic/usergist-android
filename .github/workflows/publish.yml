@@ -1,0 +1,106 @@
+name: Publish Android SDK to Maven Central
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing public version tag
+        required: true
+        type: string
+      publish:
+        description: Upload to Maven Central (false builds and signs only)
+        default: false
+        type: boolean
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: maven-release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'Future-Picnic/usergist-android' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: maven-central
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - name: Validate tag syntax
+        run: '[[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Check version and license
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+          version = os.environ['RELEASE_TAG'][1:]
+          assert Path('SDK_VERSION').read_text().strip() == version
+          gradle = Path('build.gradle.kts').read_text()
+          assert re.findall(r'^\s*version = "([^"]+)"', gradle, re.M) == [version, version]
+          assert f'SDK_VERSION_FALLBACK: String = "{version}"' in Path('src/main/kotlin/studio/usergist/feedback/internal/Config.kt').read_text()
+          assert 'MIT License' in Path('LICENSE').read_text()
+          PY
+      - name: Build and test the public release source
+        run: ./gradlew --no-daemon test lintRelease assembleRelease
+      - name: Produce the signed Maven bundle
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PRIVATE_KEY_PASSWORD: ${{ secrets.GPG_PRIVATE_KEY_PASSWORD }}
+        run: |
+          test -n "$GPG_PRIVATE_KEY"
+          test -n "$GPG_PRIVATE_KEY_PASSWORD"
+          ./gradlew --no-daemon publishReleasePublicationToCentralBundleRepository
+          python3 - <<'PY'
+          import hashlib, os, zipfile
+          from pathlib import Path
+          root = Path('build/central-staging')
+          artifacts = list((root / 'com/usergist/feedback').rglob('*'))
+          assert any(p.suffix == '.aar' for p in artifacts), 'Missing Android artifact'
+          assert any(p.suffix == '.asc' for p in artifacts), 'Missing signatures'
+          for path in artifacts:
+              if not path.is_file() or path.suffix in ['.md5','.sha1','.sha256','.sha512']:
+                  continue
+              for algorithm in ['md5','sha1','sha256','sha512']:
+                  Path(str(path)+'.'+algorithm).write_text(hashlib.new(algorithm,path.read_bytes()).hexdigest())
+          with zipfile.ZipFile(Path(os.environ['RUNNER_TEMP'])/'usergist-central.zip','w',zipfile.ZIP_DEFLATED) as bundle:
+              for path in (root / 'com').rglob('*'):
+                  if path.is_file(): bundle.write(path,path.relative_to(root))
+          PY
+      - name: Publish to Maven Central
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          test -n "$CENTRAL_TOKEN_USERNAME"
+          test -n "$CENTRAL_TOKEN_PASSWORD"
+          authorization=$(printf '%s:%s' "$CENTRAL_TOKEN_USERNAME" "$CENTRAL_TOKEN_PASSWORD" | base64 -w0)
+          deployment=$(curl --fail-with-body --silent --show-error \
+            --request POST --header "Authorization: Bearer $authorization" \
+            --form "bundle=@$RUNNER_TEMP/usergist-central.zip;type=application/octet-stream" \
+            "https://central.sonatype.com/api/v1/publisher/upload?publishingType=AUTOMATIC&name=usergist-android-${RELEASE_TAG}")
+          [[ "$deployment" =~ ^[a-f0-9-]{36}$ ]]
+          echo "Maven deployment: $deployment" >> "$GITHUB_STEP_SUMMARY"
+          for attempt in $(seq 1 30); do
+            response=$(curl --fail-with-body --silent --show-error --request POST \
+              --header "Authorization: Bearer $authorization" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=$deployment")
+            state=$(printf '%s' "$response" | jq -r .deploymentState)
+            if [[ "$state" == PUBLISHED ]]; then echo 'Maven Central publication confirmed'; exit 0; fi
+            if [[ "$state" == FAILED ]]; then printf '%s\n' "$response"; exit 1; fi
+            sleep 20
+          done
+          echo 'Publication has not completed; inspect the deployment before retrying an upload.' >&2
+          exit 1
+      - name: Report validation-only result
+        if: github.event_name == 'workflow_dispatch' && !inputs.publish
+        run: echo 'Signed release bundle verified. Nothing was uploaded or published.' >> "$GITHUB_STEP_SUMMARY"
