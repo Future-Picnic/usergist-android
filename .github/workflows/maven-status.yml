@@ -1,0 +1,51 @@
+name: Inspect existing Maven Central deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_id:
+        description: Existing Maven deployment UUID (no upload or publication is performed)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    if: github.repository == 'Future-Picnic/usergist-android' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: maven-central
+    steps:
+      - name: Read the existing deployment status
+        env:
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.error, urllib.request, uuid
+          deployment = os.environ['DEPLOYMENT_ID']
+          assert str(uuid.UUID(deployment)) == deployment, 'Expected a deployment UUID'
+          username = os.environ['CENTRAL_TOKEN_USERNAME']
+          password = os.environ['CENTRAL_TOKEN_PASSWORD']
+          assert username and password, 'Maven Central credentials are missing'
+          authorization = base64.b64encode(f'{username}:{password}'.encode()).decode()
+          request = urllib.request.Request(
+              'https://central.sonatype.com/api/v1/publisher/status?id=' + deployment,
+              method='POST', headers={'Authorization': 'Bearer ' + authorization})
+          try:
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  result = json.load(response)
+          except urllib.error.HTTPError as error:
+              raise SystemExit(f'Maven Central status request returned HTTP {error.code}')
+          state = result.get('deploymentState')
+          assert state, 'Maven Central returned no deployment state'
+          print(json.dumps({'deploymentId': deployment, 'deploymentState': state,
+                            'errors': result.get('errors')}, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f'Existing Maven deployment `{deployment}`: **{state}**.\n')
+          if state == 'FAILED':
+              raise SystemExit('Existing deployment failed validation; nothing was uploaded again')
+          PY
